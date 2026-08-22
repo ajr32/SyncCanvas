@@ -15,6 +15,8 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+import os
+import json
 
 from canvassync.config import (
     GOOGLE_CREDENTIALS_FILE,
@@ -48,8 +50,18 @@ def get_calendar_service():
     token_path = Path(GOOGLE_TOKEN_FILE)
     credentials_path = Path(GOOGLE_CREDENTIALS_FILE)
 
+    # In Google Cloud, OAuth credentials are supplied securely through
+    # Secret Manager as an environment variable.
+    google_token = os.getenv("GOOGLE_TOKEN")
+
+    if google_token:
+        credentials = Credentials.from_authorized_user_info(
+            json.loads(google_token),
+            SCOPES,
+        )
+
     # If we've authorized CanvasSync before, load the saved credentials.
-    if token_path.exists():
+    if credentials is None and token_path.exists():
         credentials = Credentials.from_authorized_user_file(
             token_path,
             SCOPES,
@@ -74,12 +86,14 @@ def get_calendar_service():
 
             credentials = flow.run_local_server(port=0)
 
-        # Save the authorization so automatic synchronization won't
-        # require signing into Google every time.
-        token_path.write_text(
-            credentials.to_json(),
-            encoding="utf-8",
-        )
+        # Locally, save refreshed/new authorization for future runs.
+        # In Google Cloud, GOOGLE_TOKEN comes from Secret Manager,
+        # so don't try to replace it with a local file.
+        if not google_token:
+            token_path.write_text(
+                credentials.to_json(),
+                encoding="utf-8",
+            )
 
     return build(
         "calendar",
