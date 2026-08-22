@@ -1,0 +1,13 @@
+steps:
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - "build"
+      - "-t"
+      - "us-east4-docker.pkg.dev/$PROJECT_ID/canvassync/canvassync:latest"
+      - "."
+
+images:
+  - "us-east4-docker.pkg.dev/$PROJECT_ID/canvassync/canvassync:latest"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
