@@ -13,6 +13,10 @@ from canvassync.canvas_client import (
     test_connection,
 )
 
+from canvassync.google_client import (
+    get_or_create_canvassync_calendar,
+    sync_assignment_event,
+)
 
 def main():
     """
@@ -64,10 +68,16 @@ def main():
 
     print(f"Assignments to sync: {len(syncable)}")
 
+    # Connect to the dedicated CanvasSync Google Calendar.
+    calendar_id = get_or_create_canvassync_calendar()
+
+    print()
+    print("Synchronizing Google Calendar...")
+
     for assignment in syncable:
-        print(
-            f"  {assignment.get('course_name')}: "
-            f"{assignment.get('name')}"
+        sync_assignment_event(
+            calendar_id,
+            assignment,
         )
 
     print()

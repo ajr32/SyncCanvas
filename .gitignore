@@ -20,7 +20,9 @@ venv/
 
 # Google credentials
 credentials.json
+credentials-old.json
 token.json
+token-old.json
 
 # OS files
 .DS_Store

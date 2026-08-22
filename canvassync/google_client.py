@@ -84,8 +84,11 @@ def get_calendar_service():
                 SCOPES,
             )
 
-            credentials = flow.run_local_server(port=0)
-
+            credentials = flow.run_local_server(
+                port=0,
+                access_type="offline",
+                prompt="consent",
+            )
         # Locally, save refreshed/new authorization for future runs.
         # In Google Cloud, GOOGLE_TOKEN comes from Secret Manager,
         # so don't try to replace it with a local file.
@@ -100,6 +103,113 @@ def get_calendar_service():
         "v3",
         credentials=credentials,
     )
+def get_or_create_canvassync_calendar():
+    """
+    Return the dedicated CanvasSync Google Calendar.
+
+    If the calendar does not exist yet, create it.
+    This prevents CanvasSync from creating another calendar every run.
+    """
+
+    service = get_calendar_service()
+
+    calendar_name = "CanvasSync"
+
+    # Search the calendars already available to this Google account.
+    page_token = None
+
+    while True:
+        result = service.calendarList().list(
+            pageToken=page_token,
+        ).execute(num_retries=3)
+
+        for calendar in result.get("items", []):
+            if calendar.get("summary") == calendar_name:
+                print(f"Found calendar: {calendar_name}")
+                return calendar.get("id")
+
+        page_token = result.get("nextPageToken")
+
+        if not page_token:
+            break
+
+    # CanvasSync doesn't have its own calendar yet, so create one.
+    calendar = service.calendars().insert(
+        body={
+            "summary": calendar_name,
+            "timeZone": "America/New_York",
+        },
+    ).execute(num_retries=3)
+
+    print(f"Created calendar: {calendar_name}")
+
+    return calendar.get("id")
+
+def sync_assignment_event(calendar_id, assignment):
+    """
+    Create or update one Canvas assignment in Google Calendar.
+
+    The Canvas assignment ID is stored as private event metadata.
+    That lets CanvasSync find the same event on future runs instead
+    of creating duplicates.
+    """
+
+    service = get_calendar_service()
+
+    assignment_id = str(assignment["id"])
+    title = assignment["name"]
+
+    due = assignment.get("due_at")
+
+    if not due:
+        return
+
+    # Find an existing event created for this Canvas assignment.
+    result = service.events().list(
+        calendarId=calendar_id,
+        privateExtendedProperty=f"canvas_assignment_id={assignment_id}",
+        maxResults=1,
+    ).execute(num_retries=3)
+
+    existing_events = result.get("items", [])
+
+    event_body = {
+        "summary": title,
+        "description": (
+            f"Canvas course: {assignment.get('course_name', '')}\n"
+            f"{assignment.get('html_url', '')}"
+        ),
+        "start": {
+            "dateTime": due,
+        },
+        "end": {
+            "dateTime": due,
+        },
+        "extendedProperties": {
+            "private": {
+                "canvas_assignment_id": assignment_id,
+            }
+        },
+    }
+
+    if existing_events:
+        event_id = existing_events[0]["id"]
+
+        service.events().update(
+            calendarId=calendar_id,
+            eventId=event_id,
+            body=event_body,
+        ).execute(num_retries=3)
+
+        print(f"Updated: {title}")
+
+    else:
+        service.events().insert(
+            calendarId=calendar_id,
+            body=event_body,
+        ).execute(num_retries=3)
+
+        print(f"Created: {title}")
 
 def create_test_calendar():
     """
