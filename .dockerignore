@@ -1,0 +1,29 @@
+# Local secrets
+.env
+.env.*
+!.env.example
+credentials.json
+token.json
+
+# Virtual environments
+.venv/
+venv/
+
+# Python cache/build files
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# IDE files
+.idea/
+.vscode/
+
+# Git
+.git/
+.gitignore
+
+# OS junk
+.DS_Store
+Thumbs.db
