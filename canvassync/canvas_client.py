@@ -14,6 +14,7 @@ Later we'll add assignment retrieval here as well.
 import requests
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from canvassync.config import CANVAS_BASE_URL, CANVAS_TOKEN
 
@@ -180,30 +181,58 @@ def get_assignments(course_id):
 
 def get_assignments_for_courses(courses):
     """
-    Retrieve assignments for all selected Canvas courses.
+    Retrieve assignments for all selected Canvas courses concurrently.
 
-    Each returned assignment is given basic course information so later
-    parts of CanvasSync know which Google Calendar it belongs to.
+    A failure in one course does not prevent the remaining courses from
+    being retrieved. Failed courses are returned separately so later
+    synchronization logic knows that the Canvas data is incomplete.
     """
 
     all_assignments = []
+    failed_courses = []
 
-    for course in courses:
-        course_id = course.get("id")
-        course_name = course.get("name", "(Unnamed Course)")
+    print()
+    print("Finding assignments...")
 
-        assignments = get_assignments(course_id)
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {
+            executor.submit(
+                get_assignments,
+                course.get("id"),
+            ): course
+            for course in courses
+        }
 
-        for assignment in assignments:
-            # Add our own course information to the Canvas assignment
-            # data. This makes it easy to determine where the assignment
-            # belongs later.
-            assignment["course_id"] = course_id
-            assignment["course_name"] = course_name
+        for future in as_completed(futures):
+            course = futures[future]
 
-            all_assignments.append(assignment)
+            course_id = course.get("id")
+            course_name = course.get("name", "(Unnamed Course)")
 
-    return all_assignments
+            try:
+                assignments = future.result()
+
+            except requests.exceptions.RequestException as error:
+                failed_courses.append(course)
+
+                print(
+                    f"  {course_name}: FAILED "
+                    f"({error})"
+                )
+
+                continue
+
+            for assignment in assignments:
+                assignment["course_id"] = course_id
+                assignment["course_name"] = course_name
+                all_assignments.append(assignment)
+
+            print(
+                f"  {course_name}: "
+                f"{len(assignments)} found"
+            )
+
+    return all_assignments, failed_courses
 
 def summarize_assignment_states(assignments):
     """
@@ -420,12 +449,29 @@ if __name__ == "__main__":
 
     print_courses(courses)
 
-    selected_courses = select_courses(courses)
+    #selected_courses = select_courses(courses)
+    # TEMPORARY:
+    # Synchronize every active Canvas course while developing.
+    # Course selection will become configurable later.
+    selected_courses = courses
 
-    assignments = get_assignments_for_courses(selected_courses)
+    assignments, failed_courses = get_assignments_for_courses(
+        selected_courses
+    )
 
     print()
     print(f"Retrieved {len(assignments)} assignments.")
+    if failed_courses:
+        print()
+        print(
+            f"WARNING: {len(failed_courses)} "
+            "course(s) could not be retrieved."
+        )
+        print(
+            "Canvas data is incomplete. "
+            "Destructive synchronization must be disabled."
+        )
+
     summarize_assignment_states(assignments)
 
     syncable = get_syncable_assignments(assignments)
