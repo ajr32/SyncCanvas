@@ -4,10 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "canvassync"
-version = "0.1.0"
+version = "0.2.0"
 description = "Synchronize Canvas assignments with Google Calendar"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "python-dotenv",
+    "requests",
+    "tzdata",
+]
 
 [project.scripts]
 canvassync = "canvassync.cli:main"
