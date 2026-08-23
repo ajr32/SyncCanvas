@@ -103,19 +103,20 @@ def get_calendar_service():
         "v3",
         credentials=credentials,
     )
-def get_or_create_canvassync_calendar():
+def get_or_create_course_calendar(course_id, course_name):
     """
-    Return the dedicated CanvasSync Google Calendar.
+    Return the Google Calendar belonging to one Canvas course.
 
-    If the calendar does not exist yet, create it.
-    This prevents CanvasSync from creating another calendar every run.
+    Each Canvas course gets its own calendar. The Canvas course ID is
+    stored in the calendar description so CanvasSync can recognize the
+    calendar even if the course name later changes.
     """
 
     service = get_calendar_service()
 
-    calendar_name = "CanvasSync"
+    calendar_name = f"CanvasSync - {course_name}"
+    course_marker = f"CanvasSync Course ID: {course_id}"
 
-    # Search the calendars already available to this Google account.
     page_token = None
 
     while True:
@@ -124,19 +125,43 @@ def get_or_create_canvassync_calendar():
         ).execute(num_retries=3)
 
         for calendar in result.get("items", []):
-            if calendar.get("summary") == calendar_name:
-                print(f"Found calendar: {calendar_name}")
-                return calendar.get("id")
+            calendar_id = calendar.get("id")
+
+            # Get the full calendar details so we can inspect
+            # the description containing our Canvas course ID.
+            details = service.calendars().get(
+                calendarId=calendar_id,
+            ).execute(num_retries=3)
+
+            if details.get("description") == course_marker:
+
+                # If Canvas renamed the course, update the existing
+                # Google Calendar instead of creating another one.
+                if details.get("summary") != calendar_name:
+                    details["summary"] = calendar_name
+
+                    service.calendars().update(
+                        calendarId=calendar_id,
+                        body=details,
+                    ).execute(num_retries=3)
+
+                    print(f"Renamed calendar: {calendar_name}")
+
+                else:
+                    print(f"Found calendar: {calendar_name}")
+
+                return calendar_id
 
         page_token = result.get("nextPageToken")
 
         if not page_token:
             break
 
-    # CanvasSync doesn't have its own calendar yet, so create one.
+    # No calendar exists for this Canvas course yet.
     calendar = service.calendars().insert(
         body={
             "summary": calendar_name,
+            "description": course_marker,
             "timeZone": "America/New_York",
         },
     ).execute(num_retries=3)
