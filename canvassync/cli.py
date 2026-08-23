@@ -69,8 +69,6 @@ def main():
     print(f"Assignments to sync: {len(syncable)}")
 
     # Connect to the dedicated CanvasSync Google Calendar.
-    calendar_id = get_or_create_course_calendar()
-
     print()
     print("Synchronizing Google Calendar...")
 
