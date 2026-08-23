@@ -18,6 +18,8 @@ from canvassync.google_client import (
     sync_assignment_event,
 )
 
+import os
+
 def main():
     """
     Run one CanvasSync synchronization cycle.
@@ -68,28 +70,41 @@ def main():
 
     print(f"Assignments to sync: {len(syncable)}")
 
+    google_accounts = [
+        account.strip()
+        for account in os.getenv("GOOGLE_ACCOUNTS", "").split(",")
+        if account.strip()
+    ]
+
+    if not google_accounts:
+        raise RuntimeError("No Google accounts configured.")
+
     # Connect to the dedicated CanvasSync Google Calendar. add
     print()
     print("Synchronizing Google Calendar...")
 
-    course_calendars = {}
+    for account in google_accounts:
+        print()
+        print(f"Google account: {account}")
 
-    for assignment in syncable:
-        course_id = assignment["course_id"]
-        course_name = assignment["course_name"]
+        course_calendars = {}
 
-        # Reuse the calendar ID when multiple assignments belong
-        # to the same course during this synchronization run.
-        if course_id not in course_calendars:
-            course_calendars[course_id] = get_or_create_course_calendar(
-                course_id,
-                course_name,
+        for assignment in syncable:
+            course_id = assignment["course_id"]
+            course_name = assignment["course_name"]
+
+            if course_id not in course_calendars:
+                course_calendars[course_id] = get_or_create_course_calendar(
+                    account,
+                    course_id,
+                    course_name,
+                )
+
+            sync_assignment_event(
+                account,
+                course_calendars[course_id],
+                assignment,
             )
-
-        sync_assignment_event(
-            course_calendars[course_id],
-            assignment,
-        )
 
 
 if __name__ == "__main__":

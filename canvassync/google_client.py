@@ -31,7 +31,7 @@ SCOPES = [
 ]
 
 
-def get_calendar_service():
+def get_calendar_service(account=None):
     """
     Authenticate with Google and return a Calendar API service.
 
@@ -50,9 +50,25 @@ def get_calendar_service():
     token_path = Path(GOOGLE_TOKEN_FILE)
     credentials_path = Path(GOOGLE_CREDENTIALS_FILE)
 
-    # In Google Cloud, OAuth credentials are supplied securely through
-    # Secret Manager as an environment variable.
-    google_token = os.getenv("GOOGLE_TOKEN")
+    # In Google Cloud, each recipient can have their own OAuth token.
+    #
+    # Examples:
+    #   GOOGLE_TOKEN_DAD
+    #   GOOGLE_TOKEN_ZACH
+    #   GOOGLE_TOKEN_MOM
+    #
+    # Calling without an account keeps compatibility with the original
+    # GOOGLE_TOKEN and with local token.json development.
+    if account:
+        token_variable = f"GOOGLE_TOKEN_{account.upper()}"
+        google_token = os.getenv(token_variable)
+    else:
+        google_token = os.getenv("GOOGLE_TOKEN")
+
+    if account and not google_token:
+        raise RuntimeError(
+            f"Google credentials not configured for account: {account}"
+        )
 
     if google_token:
         credentials = Credentials.from_authorized_user_info(
@@ -103,7 +119,7 @@ def get_calendar_service():
         "v3",
         credentials=credentials,
     )
-def get_or_create_course_calendar(course_id, course_name):
+def get_or_create_course_calendar(account, course_id, course_name):
     """
     Return the Google Calendar belonging to one Canvas course.
 
@@ -112,7 +128,7 @@ def get_or_create_course_calendar(course_id, course_name):
     calendar even if the course name later changes.
     """
 
-    service = get_calendar_service()
+    service = get_calendar_service(account)
 
     calendar_name = f"CanvasSync - {course_name}"
     course_marker = f"CanvasSync Course ID: {course_id}"
@@ -170,7 +186,7 @@ def get_or_create_course_calendar(course_id, course_name):
 
     return calendar.get("id")
 
-def sync_assignment_event(calendar_id, assignment):
+def sync_assignment_event(account, calendar_id, assignment):
     """
     Create or update one Canvas assignment in Google Calendar.
 
@@ -179,7 +195,7 @@ def sync_assignment_event(calendar_id, assignment):
     of creating duplicates.
     """
 
-    service = get_calendar_service()
+    service = get_calendar_service(account)
 
     assignment_id = str(assignment["id"])
     title = assignment["name"]
