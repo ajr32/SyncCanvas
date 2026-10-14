@@ -1,0 +1,11 @@
+Metadata-Version: 2.4
+Name: synccanvas
+Version: 0.1.0
+Summary: Family homework planner (local development prototype)
+Requires-Python: >=3.11
+Requires-Dist: fastapi<1,>=0.110
+Requires-Dist: uvicorn<1,>=0.27
+Requires-Dist: python-multipart<1,>=0.0.9
+Provides-Extra: test
+Requires-Dist: pytest<10,>=8; extra == "test"
+Requires-Dist: httpx<1,>=0.27; extra == "test"

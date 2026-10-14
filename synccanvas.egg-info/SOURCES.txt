@@ -1,0 +1,10 @@
+README.md
+pyproject.toml
+synccanvas/__init__.py
+synccanvas/main.py
+synccanvas.egg-info/PKG-INFO
+synccanvas.egg-info/SOURCES.txt
+synccanvas.egg-info/dependency_links.txt
+synccanvas.egg-info/requires.txt
+synccanvas.egg-info/top_level.txt
+tests/test_app.py
