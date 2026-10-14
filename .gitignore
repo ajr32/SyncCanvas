@@ -1,29 +1,9 @@
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-dist/
-build/
-
-# Virtual environments
 .venv/
-venv/
-
-# IDE
-.idea/
-.vscode/
-
-# Secrets / configuration
+__pycache__/
+.pytest_cache/
+*.py[cod]
+*.sqlite3
 .env
-.env.*
-!.env.example
-
-# Google credentials
 credentials.json
-credentials-old.json
 token.json
-token-old.json
-
-# OS files
-.DS_Store
-Thumbs.db
+*.secret
