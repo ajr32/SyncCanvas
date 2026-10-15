@@ -7,13 +7,19 @@ Do not expose publicly without authentication.
 from __future__ import annotations
 
 from dataclasses import asdict
+import os
 
 from fastapi import FastAPI, Form, HTTPException
 from fastapi.responses import RedirectResponse
 
+from synccanvas.canvas_settings import get_canvas_settings
 from synccanvas.database import db
 from synccanvas.pages import router as pages_router, today
+from synccanvas.parent_classes import router as parent_classes_router
 from synccanvas.services.background_sync import background_sync
+from synccanvas.services.canvas_http import CanvasHTTP
+from synccanvas.services.canvas_import_worker import CanvasImportWorker
+from synccanvas.services.sync_coordinator import sync_coordinator
 from synccanvas.services.parent_review import (
     ParentReviewError,
     confirm_task,
@@ -28,6 +34,34 @@ from synccanvas.services.tasks import (
 
 
 app = FastAPI(title="SyncCanvas (local prototype)")
+
+
+def configure_canvas_sync(settings=None) -> bool:
+    """Configure the existing shared Canvas synchronization service."""
+    if settings is None:
+        url, token = get_canvas_settings()
+    else:
+        url = settings.get("SYNCCANVAS_CANVAS_URL", "").strip()
+        token = settings.get("SYNCCANVAS_CANVAS_TOKEN", "").strip()
+
+    if not url or not token:
+        return False
+
+    try:
+        client = CanvasHTTP(base_url=url, token=token)
+    except ValueError:
+        return False
+
+    background_sync.configure(
+        CanvasImportWorker(
+            fetch_assignments=client.assignments_for_course
+        )
+    )
+    return True
+
+
+# Configuration does not start a Canvas network request.
+configure_canvas_sync()
 
 
 def go(path: str = "/") -> RedirectResponse:
@@ -61,6 +95,7 @@ def require_class(conn, class_id: int):
 
 @app.post("/classes")
 def add_class(name: str = Form(...)):
+    """Legacy route retained for existing tests and integrations."""
     name = name.strip()
 
     if not 1 <= len(name) <= 80:
@@ -123,13 +158,7 @@ def add_entry(
 def nothing_tonight(class_id: int):
     with db() as conn:
         require_class(conn, class_id)
-
-        # Preserve existing tasks.
-        set_checkin(
-            conn,
-            class_id,
-            nothing=True,
-        )
+        set_checkin(conn, class_id, nothing=True)
 
     return go()
 
@@ -239,21 +268,21 @@ def parent_note(entry_id: int, note: str = Form("")):
     return go("/parent")
 
 
-# Background synchronization API.
-# No Canvas worker is configured by default.
-
-
 @app.get("/api/sync/status")
 def sync_status():
-    """Read the current background synchronization status."""
     return asdict(background_sync.status())
 
 
 @app.post("/api/sync/run")
 def sync_run():
-    """Request one background synchronization attempt."""
     return asdict(background_sync.request_sync())
 
 
-# Register the student and parent pages.
+@app.post("/sync/run")
+def sync_run_from_page():
+    sync_coordinator.request_sync()
+    return go("/")
+
+
 app.include_router(pages_router)
+app.include_router(parent_classes_router)

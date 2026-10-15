@@ -9,27 +9,11 @@ Status is stored in memory only. It resets when the application restarts.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime, timezone
-from enum import Enum
 from threading import Lock, Thread
-from typing import Callable, Protocol
+from typing import Protocol
 
-
-class SyncState(str, Enum):
-    NOT_CONFIGURED = "not_configured"
-    IDLE = "idle"
-    RUNNING = "running"
-    SUCCESS = "success"
-    ERROR = "error"
-
-
-@dataclass(frozen=True)
-class SyncResult:
-    state: SyncState
-    message: str
-    started_at: str | None = None
-    finished_at: str | None = None
+from synccanvas.models.sync_result import SyncResult, SyncState
 
 
 class SyncWorker(Protocol):
@@ -61,6 +45,22 @@ class BackgroundSync:
                 message="Synchronization is not configured yet.",
             )
         else:
+            self._result = SyncResult(
+                state=SyncState.IDLE,
+                message="Ready to synchronize.",
+            )
+
+    def configure(self, worker: SyncWorker) -> None:
+        """Install an explicit worker without replacing this shared service.
+
+        Configuration is allowed only while synchronization is not running.
+        """
+        if not callable(worker):
+            raise ValueError("A callable synchronization worker is required.")
+        with self._lock:
+            if self._result.state == SyncState.RUNNING:
+                raise RuntimeError("Cannot configure while synchronization is running.")
+            self._worker = worker
             self._result = SyncResult(
                 state=SyncState.IDLE,
                 message="Ready to synchronize.",

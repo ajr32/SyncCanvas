@@ -6,12 +6,11 @@ from threading import Event
 from synccanvas.services.background_sync import (
     BackgroundSync,
     SyncState,
-    background_sync,
 )
 
 
 def test_default_sync_is_not_configured():
-    result = background_sync.status()
+    result = BackgroundSync().status()
 
     assert result.state == SyncState.NOT_CONFIGURED
     assert result.started_at is None
