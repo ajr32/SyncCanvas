@@ -20,6 +20,7 @@ from synccanvas.services.class_management import (
     add_class,
     delete_empty_class,
     list_classes,
+    move_class,
     rename_class,
     set_archived,
     set_enabled,
@@ -60,10 +61,12 @@ def course_search():
 
 def class_options(classes):
     choices = ['<option value="0">Create a new class</option>']
+
     for cls in classes:
         choices.append(
             f'<option value="{cls.id}">{esc(cls.name)}</option>'
         )
+
     return "".join(choices)
 
 
@@ -146,6 +149,7 @@ def render_page(discovered=None, message=""):
 
         for course in discovered:
             linked = course.canvas_course_id in linked_ids
+
             parts.append(
                 '<div class="class">'
                 f'<strong>{esc(course.name)}</strong>'
@@ -201,12 +205,13 @@ def render_page(discovered=None, message=""):
     if not classes:
         parts.append('<p>No classes yet.</p>')
 
-    for cls in classes:
+    for index, cls in enumerate(classes):
         status = (
             "Archived" if cls.archived
             else "Enabled" if cls.enabled
             else "Disabled"
         )
+
         link = (
             f"Canvas #{cls.canvas_course_id}"
             if cls.canvas_course_id is not None
@@ -217,6 +222,34 @@ def render_page(discovered=None, message=""):
             '<div class="class">',
             f'<h4>{esc(cls.name)}</h4>',
             f'<p><small>{esc(status)} · {esc(link)}</small></p>',
+        ])
+
+        # Class ordering controls.
+        parts.append('<div class="row">')
+
+        if index > 0:
+            parts.extend([
+                '<form method="post" '
+                f'action="/parent/classes/{cls.id}/move">',
+                '<input type="hidden" name="direction" value="up">',
+                '<button class="secondary" type="submit">'
+                '↑ Move up</button>',
+                '</form>',
+            ])
+
+        if index < len(classes) - 1:
+            parts.extend([
+                '<form method="post" '
+                f'action="/parent/classes/{cls.id}/move">',
+                '<input type="hidden" name="direction" value="down">',
+                '<button class="secondary" type="submit">'
+                '↓ Move down</button>',
+                '</form>',
+            ])
+
+        parts.append('</div>')
+
+        parts.extend([
             '<form method="post" '
             f'action="/parent/classes/{cls.id}/rename">',
             '<label>Rename</label>',
@@ -263,6 +296,7 @@ def add_manual_class(name: str = Form(...)):
             add_class(conn, name)
     except ClassManagementError as error:
         return error_response(str(error))
+
     return back()
 
 
@@ -273,6 +307,18 @@ def rename(class_id: int, name: str = Form(...)):
             rename_class(conn, class_id, name)
     except ClassManagementError as error:
         return error_response(str(error))
+
+    return back()
+
+
+@router.post("/{class_id}/move")
+def move(class_id: int, direction: str = Form(...)):
+    try:
+        with db() as conn:
+            move_class(conn, class_id, direction)
+    except ClassManagementError as error:
+        return error_response(str(error))
+
     return back()
 
 
@@ -286,6 +332,7 @@ def change_enabled(class_id: int, enabled: int = Form(...)):
             set_enabled(conn, class_id, bool(enabled))
     except ClassManagementError as error:
         return error_response(str(error))
+
     return back()
 
 
@@ -299,6 +346,7 @@ def change_archived(class_id: int, archived: int = Form(...)):
             set_archived(conn, class_id, bool(archived))
     except ClassManagementError as error:
         return error_response(str(error))
+
     return back()
 
 
@@ -309,6 +357,7 @@ def delete(class_id: int):
             delete_empty_class(conn, class_id)
     except ClassManagementError as error:
         return error_response(str(error))
+
     return back()
 
 

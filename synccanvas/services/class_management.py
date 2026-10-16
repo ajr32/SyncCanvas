@@ -148,6 +148,39 @@ def set_archived(
     )
 
 
+def move_class(
+    conn: sqlite3.Connection,
+    class_id: int,
+    direction: str,
+) -> None:
+    """Move a class up or down without changing its identity.
+
+    The class order is stored in the existing sort_order column.
+    Student entries, check-ins, and Canvas links are untouched.
+    """
+    require_class(conn, class_id)
+
+    if direction not in ("up", "down"):
+        raise ClassManagementError("Invalid move direction.")
+
+    classes = list_classes(conn)
+    ids = [item.id for item in classes]
+    position = ids.index(class_id)
+
+    target = position + (-1 if direction == "up" else 1)
+
+    if target < 0 or target >= len(ids):
+        return
+
+    ids[position], ids[target] = ids[target], ids[position]
+
+    for index, current_id in enumerate(ids):
+        conn.execute(
+            "UPDATE classes SET sort_order=? WHERE id=?",
+            (index, current_id),
+        )
+
+
 def delete_empty_class(
     conn: sqlite3.Connection,
     class_id: int,
