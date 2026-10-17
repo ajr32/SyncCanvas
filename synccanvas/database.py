@@ -40,6 +40,9 @@ def ensure_entry_columns(conn):
         conn.execute("ALTER TABLE entries ADD COLUMN origin TEXT NOT NULL DEFAULT 'student'")
     if "planned_date" not in columns:
         conn.execute("ALTER TABLE entries ADD COLUMN planned_date TEXT")
+    for name in ("due_date", "due_time", "priority"):
+        if name not in columns:
+            conn.execute(f"ALTER TABLE entries ADD COLUMN {name} TEXT")
 
     if "parent_confirmed" not in columns:
         conn.execute(
