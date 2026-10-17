@@ -72,7 +72,30 @@ def layout(title, content):
         '<a href="/settings">Settings</a></nav></header>'
         f'<main><h2>{esc(title)}</h2>{content}'
         '<p><small>Local prototype only · No accounts or cloud sync yet · Do not publish online</small></p>'
-        '</main></body></html>'
+        '''<script>
+        document.addEventListener('DOMContentLoaded', function () {
+          const status = document.createElement('p');
+          status.setAttribute('role', 'status');
+          status.setAttribute('aria-live', 'polite');
+          status.style.cssText = 'position:sticky;bottom:0;background:#edf3fb;padding:8px;border-radius:8px;display:none';
+          document.querySelector('main').appendChild(status);
+          document.querySelectorAll('form[method="post"]').forEach(function (form) {
+            form.addEventListener('submit', function () {
+              if (form.dataset.submitting === 'yes') return;
+              form.dataset.submitting = 'yes';
+              status.textContent = 'Saving or loading… Please wait.';
+              status.style.display = 'block';
+              form.querySelectorAll('button[type="submit"],button:not([type])').forEach(function (button) {
+                button.disabled = true;
+                button.textContent = 'Working…';
+              });
+            });
+          });
+          window.addEventListener('pageshow', function (event) {
+            if (event.persisted) window.location.reload();
+          });
+        });
+        </script></main></body></html>'''
     )
 
 def today():
