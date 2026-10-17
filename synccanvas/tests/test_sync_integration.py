@@ -39,7 +39,11 @@ def client(monkeypatch):
             details TEXT,
             done INTEGER DEFAULT 0,
             parent_confirmed INTEGER DEFAULT 0,
-            coaching_note TEXT DEFAULT ''
+            coaching_note TEXT DEFAULT '',
+            progress TEXT NOT NULL DEFAULT 'not_started',
+            completed_at TEXT,
+            origin TEXT NOT NULL DEFAULT 'student',
+            planned_date TEXT
         );
 
         CREATE TABLE checkins (

@@ -56,6 +56,42 @@ def add_class(name: str = Form(...)):
         conn.execute("INSERT OR IGNORE INTO classes(name) VALUES (?)", (name,))
     return go()
 
+@app.post("/school/classes/{class_id}/review")
+def school_review_class(class_id: int, outcome: str = Form(...)):
+    if outcome not in ("reviewed", "nothing", "needs_followup"):
+        raise HTTPException(422, "Invalid class review outcome")
+    with db() as conn:
+        require_class(conn, class_id)
+        conn.execute("""INSERT INTO school_reviews(class_id,day,outcome)
+            VALUES(?,?,?) ON CONFLICT(class_id,day) DO UPDATE SET
+            outcome=excluded.outcome,reviewed_at=CURRENT_TIMESTAMP""",(class_id,today(),outcome))
+    return go("/review")
+
+@app.post("/school/papers")
+def school_review_papers(pocket_checked: str = Form(""), backpack_checked: str = Form(""), notes: str = Form("")):
+    if len(notes.strip()) > 300:
+        raise HTTPException(422, "Paper notes must be at most 300 characters")
+    with db() as conn:
+        conn.execute("""INSERT INTO paper_reviews(day,pocket_checked,backpack_checked,notes)
+            VALUES(?,?,?,?) ON CONFLICT(day) DO UPDATE SET
+            pocket_checked=excluded.pocket_checked,backpack_checked=excluded.backpack_checked,
+            notes=excluded.notes,reviewed_at=CURRENT_TIMESTAMP""",
+            (today(),int(pocket_checked=="yes"),int(backpack_checked=="yes"),notes.strip()))
+    return go("/review")
+
+@app.post("/school/classes/{class_id}/question")
+def school_class_question(class_id: int, question: str = Form(""), resolved: str = Form("")):
+    question=question.strip()
+    if len(question)>300:
+        raise HTTPException(422,"Question must be at most 300 characters")
+    with db() as conn:
+        require_class(conn,class_id)
+        conn.execute("""INSERT INTO class_questions(class_id,day,question,resolved)
+            VALUES(?,?,?,?) ON CONFLICT(class_id,day) DO UPDATE SET
+            question=excluded.question,resolved=excluded.resolved,updated_at=CURRENT_TIMESTAMP""",
+            (class_id,today(),question,int(resolved=="yes")))
+    return go("/review")
+
 @app.post("/classes/{class_id}/entries")
 def add_entry(class_id: int, kind: str = Form(...), details: str = Form(...), submission_token: str = Form("")):
     try:
@@ -90,6 +126,33 @@ def checked_today(class_id: int):
         set_checkin(conn, class_id)
     return go()
 
+@app.post("/parent/entries/{entry_id}/canvas-link")
+def link_canvas_task(entry_id: int, canvas_assignment_id: int = Form(...)):
+    """Associate a manual task with an imported Canvas assignment, without merging data."""
+    with db() as conn:
+        entry = conn.execute("SELECT class_id FROM entries WHERE id=?", (entry_id,)).fetchone()
+        if entry is None:
+            raise HTTPException(404, "Task not found")
+        assignment = conn.execute("""SELECT 1 FROM canvas_assignments a
+            JOIN canvas_course_links l ON l.canvas_course_id=a.canvas_course_id
+            WHERE a.id=? AND l.class_id=?""", (canvas_assignment_id, entry['class_id'])).fetchone()
+        if assignment is None:
+            raise HTTPException(422, "Choose a Canvas assignment from the same class")
+        conn.execute("""INSERT INTO entry_canvas_links(entry_id,canvas_assignment_id)
+            VALUES (?,?) ON CONFLICT(entry_id) DO UPDATE SET
+            canvas_assignment_id=excluded.canvas_assignment_id""", (entry_id, canvas_assignment_id))
+    return go('/parent')
+
+
+@app.post("/parent/entries/{entry_id}/canvas-unlink")
+def unlink_canvas_task(entry_id: int):
+    with db() as conn:
+        if not conn.execute("SELECT 1 FROM entries WHERE id=?", (entry_id,)).fetchone():
+            raise HTTPException(404, "Task not found")
+        conn.execute("DELETE FROM entry_canvas_links WHERE entry_id=?", (entry_id,))
+    return go('/parent')
+
+
 @app.post("/entries/{entry_id}/edit")
 def edit_entry(entry_id: int, kind: str = Form(...), details: str = Form(...)):
     try:
@@ -102,6 +165,63 @@ def edit_entry(entry_id: int, kind: str = Form(...), details: str = Form(...)):
         if not result.rowcount:
             raise HTTPException(404, "Entry not found")
     return go("/parent")
+
+@app.post("/settings/expectations/add")
+def add_expectation(class_id: int = Form(...), kind: str = Form("Study"),
+                    details: str = Form(...), frequency: str = Form("daily")):
+    if frequency not in ("daily", "weekdays"):
+        raise HTTPException(422, "Choose daily or weekdays")
+    try:
+        task = validate_task(TaskInput(class_id=class_id, kind=kind, details=details))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    with db() as conn:
+        require_class(conn, task.class_id)
+        conn.execute("""INSERT INTO recurring_expectations(class_id,kind,details,frequency)
+            VALUES (?,?,?,?)""", (task.class_id,task.kind,task.details,frequency))
+    return go("/settings")
+
+
+@app.post("/settings/expectations/{expectation_id}/toggle")
+def toggle_expectation(expectation_id: int):
+    with db() as conn:
+        result = conn.execute("""UPDATE recurring_expectations
+            SET enabled=1-enabled WHERE id=?""", (expectation_id,))
+        if not result.rowcount:
+            raise HTTPException(404, "Expectation not found")
+    return go("/settings")
+
+
+@app.post("/parent/tasks/add")
+def parent_add_task(class_id: int = Form(...), kind: str = Form(...),
+                    details: str = Form(...), planned_date: str = Form("")):
+    from datetime import date
+    try:
+        task = validate_task(TaskInput(class_id=class_id, kind=kind, details=details))
+        planned = date.fromisoformat(planned_date).isoformat() if planned_date else None
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    with db() as conn:
+        require_class(conn, task.class_id)
+        conn.execute("""INSERT INTO entries(class_id,kind,details,origin,planned_date)
+                        VALUES (?,?,?,'parent',?)""",
+                     (task.class_id,task.kind,task.details,planned))
+    return go("/parent")
+
+
+@app.post("/parent/entries/{entry_id}/plan")
+def parent_plan_task(entry_id: int, planned_date: str = Form("")):
+    from datetime import date
+    try:
+        planned = date.fromisoformat(planned_date).isoformat() if planned_date else None
+    except ValueError as exc:
+        raise HTTPException(422, "Invalid work date") from exc
+    with db() as conn:
+        result=conn.execute("UPDATE entries SET planned_date=? WHERE id=?", (planned,entry_id))
+        if not result.rowcount:
+            raise HTTPException(404,"Entry not found")
+    return go("/parent")
+
 
 @app.post("/parent/entries/{entry_id}/delete")
 def delete_entry(entry_id: int):

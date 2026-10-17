@@ -1,4 +1,4 @@
-"""Regression tests for the two-state task workflow."""
+"""Regression tests for the three-state task workflow."""
 import pytest
 from fastapi.testclient import TestClient
 from synccanvas import database, main
@@ -21,8 +21,8 @@ def test_student_only_marks_done_from_homework_review(client):
     assert '/entries/1/edit' not in student
     assert '/entries/1/delete' not in student
     home = client.get('/home').text
-    assert '/entries/1/done' in home
-    assert client.post('/entries/1/done').status_code == 200
+    assert '/entries/1/progress' in home
+    assert client.post('/entries/1/progress', data={'progress': 'done'}).status_code == 200
     assert 'Worksheet' not in client.get('/home').text
     assert 'Student says done' in client.get('/parent').text
     client.post('/parent/entries/1/confirm')

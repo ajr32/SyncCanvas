@@ -36,6 +36,11 @@ def ensure_entry_columns(conn):
         for row in conn.execute("PRAGMA table_info(entries)")
     }
 
+    if "origin" not in columns:
+        conn.execute("ALTER TABLE entries ADD COLUMN origin TEXT NOT NULL DEFAULT 'student'")
+    if "planned_date" not in columns:
+        conn.execute("ALTER TABLE entries ADD COLUMN planned_date TEXT")
+
     if "parent_confirmed" not in columns:
         conn.execute(
             "ALTER TABLE entries ADD COLUMN "
@@ -143,6 +148,37 @@ def db():
         )
 
         ensure_entry_columns(conn)
+        conn.execute("""CREATE TABLE IF NOT EXISTS recurring_expectations (
+            id INTEGER PRIMARY KEY,
+            class_id INTEGER NOT NULL REFERENCES classes(id),
+            kind TEXT NOT NULL,
+            details TEXT NOT NULL,
+            frequency TEXT NOT NULL CHECK(frequency IN ('daily','weekdays')),
+            enabled INTEGER NOT NULL DEFAULT 1
+        )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS recurring_instances (
+            expectation_id INTEGER NOT NULL REFERENCES recurring_expectations(id),
+            work_date TEXT NOT NULL,
+            entry_id INTEGER NOT NULL REFERENCES entries(id),
+            PRIMARY KEY(expectation_id,work_date)
+        )""")
+
+        conn.execute("""CREATE TABLE IF NOT EXISTS school_reviews (
+            class_id INTEGER NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+            day TEXT NOT NULL, reviewed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            outcome TEXT NOT NULL CHECK(outcome IN ('reviewed','nothing','needs_followup')),
+            PRIMARY KEY(class_id,day))""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS paper_reviews (
+            day TEXT PRIMARY KEY, pocket_checked INTEGER NOT NULL DEFAULT 0,
+            backpack_checked INTEGER NOT NULL DEFAULT 0,
+            notes TEXT NOT NULL DEFAULT '',
+            reviewed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS class_questions (
+            class_id INTEGER NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+            day TEXT NOT NULL, question TEXT NOT NULL,
+            resolved INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY(class_id,day))""")
 
         conn.execute(
             """
@@ -203,6 +239,11 @@ def db():
             ON canvas_assignments(canvas_course_id)
             """
         )
+
+        conn.execute("""CREATE TABLE IF NOT EXISTS entry_canvas_links (
+            entry_id INTEGER PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE,
+            canvas_assignment_id INTEGER NOT NULL REFERENCES canvas_assignments(id) ON DELETE CASCADE
+        )""")
 
         conn.commit()
         yield conn
