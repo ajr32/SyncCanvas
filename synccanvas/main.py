@@ -116,17 +116,33 @@ def delete_entry(entry_id: int):
 def toggle_entry(entry_id: int):
     """Legacy endpoint retained for existing tests; UI only exposes Done in Homework Review."""
     with db() as conn:
-        result = conn.execute("""UPDATE entries SET done=1-done, parent_confirmed=0
+        result = conn.execute("""UPDATE entries SET done=1-done, progress=CASE WHEN done=0 THEN 'done' ELSE 'not_started' END, parent_confirmed=0
             WHERE id=? AND kind != 'Nothing Tonight'""", (entry_id,))
         if not result.rowcount:
             raise HTTPException(404, "Entry not found")
     return go()
 
+@app.post("/entries/{entry_id}/progress")
+def update_entry_progress(entry_id: int, progress: str = Form(...)):
+    if progress not in ("not_started", "in_progress", "done"):
+        raise HTTPException(422, "Invalid task progress")
+    with db() as conn:
+        result = conn.execute(
+            """UPDATE entries SET progress=?, done=?, parent_confirmed=CASE
+            WHEN ?='done' THEN parent_confirmed ELSE 0 END
+            WHERE id=? AND kind != 'Nothing Tonight'""",
+            (progress, int(progress == "done"), progress, entry_id),
+        )
+        if not result.rowcount:
+            raise HTTPException(404, "Entry not found")
+    return go("/home")
+
+
 @app.post("/entries/{entry_id}/done")
 def mark_entry_done(entry_id: int):
     """Idempotent completion action for Homework Review."""
     with db() as conn:
-        result = conn.execute("""UPDATE entries SET done=1, parent_confirmed=0
+        result = conn.execute("""UPDATE entries SET done=1, progress='done', parent_confirmed=0
             WHERE id=? AND done=0 AND kind != 'Nothing Tonight'""", (entry_id,))
         if not result.rowcount:
             raise HTTPException(409, "Task not found or already done")
