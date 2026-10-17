@@ -4,7 +4,6 @@ from fastapi.testclient import TestClient
 from synccanvas import database, pages
 from synccanvas.main import app
 
-
 def test_lunch_buddies_create_update_delete(tmp_path, monkeypatch):
     monkeypatch.setattr(database, 'DB_PATH', tmp_path / 'lunch.sqlite3')
     with database.db() as conn:
@@ -26,14 +25,9 @@ def test_lunch_buddies_create_update_delete(tmp_path, monkeypatch):
     with database.db() as conn:
         assert conn.execute('SELECT count(*) FROM lunch_buddies').fetchone()[0] == 0
 
-
 def test_lunch_buddies_appear_on_matching_day(tmp_path, monkeypatch):
     monkeypatch.setattr(database, 'DB_PATH', tmp_path / 'day.sqlite3')
-    class Monday:
-        @staticmethod
-        def today():
-            return RealDate(2026, 10, 19)
-    monkeypatch.setattr(pages, 'date', Monday)
+    monkeypatch.setattr(pages, 'family_today', lambda: RealDate(2026, 10, 19))
     with database.db() as conn:
         conn.execute("INSERT INTO bell_periods(id,label,start_time,end_time,weekdays) VALUES(1,'L','11:30','12:00','01234')")
         conn.execute("INSERT INTO lunch_buddies(name,period_id,weekdays) VALUES('Chess Lunch',1,'0')")

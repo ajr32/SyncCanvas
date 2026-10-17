@@ -1,8 +1,7 @@
-
-"""Validation for student tasks."""
+"""Validation for student tasks and optional due dates."""
 
 from dataclasses import dataclass
-
+from datetime import date
 
 ALLOWED_KINDS = (
     "Homework",
@@ -23,41 +22,33 @@ class TaskInput:
 def validate_task(task: TaskInput) -> TaskInput:
     if task.class_id <= 0:
         raise ValueError("Choose a valid class.")
-
     if task.kind not in ALLOWED_KINDS:
         raise ValueError("Choose a valid task type.")
-
     details = task.details.strip()
-
     if not details:
         raise ValueError("Enter what needs to be done.")
-
     if len(details) > 300:
-        raise ValueError(
-            "Task description must be 300 characters or fewer."
-        )
-
-    return TaskInput(
-        class_id=task.class_id,
-        kind=task.kind,
-        details=details,
-    )
+        raise ValueError("Task description must be 300 characters or fewer.")
+    return TaskInput(class_id=task.class_id, kind=task.kind, details=details)
 
 
-def validate_task_details(
-    kind: str,
-    details: str,
-) -> tuple[str, str]:
-    """Validate edits where the class ID is unchanged."""
-
+def validate_task_details(kind: str, details: str) -> tuple[str, str]:
     if kind not in ALLOWED_KINDS:
         raise ValueError("Choose a valid task type.")
-
     details = details.strip()
-
     if not 1 <= len(details) <= 300:
-        raise ValueError(
-            "Enter a task description (1–300 characters)."
-        )
-
+        raise ValueError("Enter a task description (1–300 characters).")
     return kind, details
+
+
+def validate_due_date(due_date: str = "") -> str | None:
+    due_date = (due_date or "").strip()
+    if not due_date:
+        return None
+    try:
+        parsed = date.fromisoformat(due_date)
+        if parsed.isoformat() != due_date:
+            raise ValueError()
+    except ValueError as exc:
+        raise ValueError("Enter a valid due date.") from exc
+    return due_date

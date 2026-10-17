@@ -13,7 +13,7 @@ from synccanvas.services.canvas_http import CanvasHTTP
 from synccanvas.services.canvas_import_worker import CanvasImportWorker
 from synccanvas.services.sync_coordinator import sync_coordinator
 from synccanvas.services.parent_review import ParentReviewError, confirm_task, return_task, save_coaching_note
-from synccanvas.services.tasks import TaskInput, validate_task, validate_task_details
+from synccanvas.services.tasks import TaskInput, validate_task, validate_task_details, validate_due_date
 from synccanvas.parent_schedule import router as parent_schedule_router
 
 app = FastAPI(title="SyncCanvas (local prototype)")
@@ -93,9 +93,10 @@ def school_class_question(class_id: int, question: str = Form(""), resolved: str
     return go("/review")
 
 @app.post("/classes/{class_id}/entries")
-def add_entry(class_id: int, kind: str = Form(...), details: str = Form(...), submission_token: str = Form("")):
+def add_entry(class_id: int, kind: str = Form(...), details: str = Form(...), submission_token: str = Form(""), due_date: str = Form("")):
     try:
         task = validate_task(TaskInput(class_id=class_id, kind=kind, details=details))
+        due_date = validate_due_date(due_date)
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
     if submission_token and (len(submission_token) != 64 or any(c not in "0123456789abcdef" for c in submission_token)):
@@ -103,8 +104,8 @@ def add_entry(class_id: int, kind: str = Form(...), details: str = Form(...), su
     with db() as conn:
         require_class(conn, task.class_id)
         try:
-            conn.execute("INSERT INTO entries(class_id, kind, details, submission_token) VALUES (?, ?, ?, ?)",
-                         (task.class_id, task.kind, task.details, submission_token or None))
+            conn.execute("INSERT INTO entries(class_id, kind, details, submission_token, due_date) VALUES (?, ?, ?, ?, ?)",
+                         (task.class_id, task.kind, task.details, submission_token or None, due_date))
         except sqlite3.IntegrityError as error:
             if submission_token and "submission_token" in str(error):
                 return go()  # Retry of the same form; do not insert another task.
@@ -154,14 +155,15 @@ def unlink_canvas_task(entry_id: int):
 
 
 @app.post("/entries/{entry_id}/edit")
-def edit_entry(entry_id: int, kind: str = Form(...), details: str = Form(...)):
+def edit_entry(entry_id: int, kind: str = Form(...), details: str = Form(...), due_date: str = Form("")):
     try:
         kind, details = validate_task_details(kind, details)
+        due_date = validate_due_date(due_date)
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
     with db() as conn:
-        result = conn.execute("""UPDATE entries SET kind=?, details=?
-            WHERE id=? AND kind != 'Nothing Tonight'""", (kind, details, entry_id))
+        result = conn.execute("""UPDATE entries SET kind=?, details=?, due_date=?
+            WHERE id=? AND kind != 'Nothing Tonight'""", (kind, details, due_date, entry_id))
         if not result.rowcount:
             raise HTTPException(404, "Entry not found")
     return go("/parent")
@@ -194,18 +196,19 @@ def toggle_expectation(expectation_id: int):
 
 @app.post("/parent/tasks/add")
 def parent_add_task(class_id: int = Form(...), kind: str = Form(...),
-                    details: str = Form(...), planned_date: str = Form("")):
+                    details: str = Form(...), planned_date: str = Form(""), due_date: str = Form("")):
     from datetime import date
     try:
         task = validate_task(TaskInput(class_id=class_id, kind=kind, details=details))
         planned = date.fromisoformat(planned_date).isoformat() if planned_date else None
+        due_date = validate_due_date(due_date)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     with db() as conn:
         require_class(conn, task.class_id)
-        conn.execute("""INSERT INTO entries(class_id,kind,details,origin,planned_date)
-                        VALUES (?,?,?,'parent',?)""",
-                     (task.class_id,task.kind,task.details,planned))
+        conn.execute("""INSERT INTO entries(class_id,kind,details,origin,planned_date,due_date)
+                        VALUES (?,?,?,'parent',?,?)""",
+                     (task.class_id,task.kind,task.details,planned,due_date))
     return go("/parent")
 
 

@@ -5,6 +5,7 @@ import json
 import secrets
 import sqlite3
 from datetime import date, datetime, timedelta
+from synccanvas.services.family_time import family_today
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import HTMLResponse
 from synccanvas.database import db
@@ -76,14 +77,34 @@ def layout(title, content):
     )
 
 def today():
-    return date.today().isoformat()
+    return family_today().isoformat()
+
+def deadline_fields(due_date=""):
+    """One optional due date for manually added tasks."""
+    return (
+        f'<label>Due date (optional)<input type="date" name="due_date" '
+        f'value="{esc(due_date or "")}"></label>'
+    )
+
+
+def deadline_label(item):
+    due = item["due_date"]
+    return f'Due {friendly_date(due)}' if due else ''
+
+
+def deadline_html(item):
+    label = deadline_label(item)
+    if not label:
+        return ''
+    return f'<p class="muted"><small>{esc(label)}</small></p>'
+
 
 def options(selected=""):
     return "".join(f'<option value="{esc(kind)}"{" selected" if kind == selected else ""}>{esc(kind)}</option>' for kind in KINDS)
 
 def get_active_classes(conn):
-    weekday = str(date.today().weekday())
-    day = date.today().isoformat()
+    weekday = str(family_today().weekday())
+    day = family_today().isoformat()
     try:
         exception = conn.execute('SELECT kind FROM school_days WHERE day=?', (day,)).fetchone()
         if exception and exception['kind']=='closed':
@@ -102,9 +123,12 @@ def get_active_classes(conn):
              AND instr(p.weekdays, ?) > 0
              ORDER BY COALESCE((SELECT sp.start_time FROM school_day_periods sp WHERE sp.period_id=p.id AND sp.day=?),p.start_time), p.id LIMIT 1) AS period_start
         FROM classes c WHERE c.enabled=1 AND c.archived=0
-        ORDER BY CASE WHEN period_start IS NULL THEN 1 ELSE 0 END,
+        ORDER BY CASE WHEN (SELECT 1 FROM class_periods cp
+                            JOIN bell_periods p ON p.id=cp.period_id
+                            WHERE cp.class_id=c.id AND instr(p.weekdays, ?) > 0
+                            LIMIT 1) IS NULL THEN 1 ELSE 0 END,
                  period_start, c.sort_order, c.id
-    """, (weekday, day, weekday, day)).fetchall()
+    """, (weekday, day, weekday, day, weekday)).fetchall()
     except sqlite3.OperationalError as exc:
         if "no such table" not in str(exc):
             raise
@@ -148,7 +172,7 @@ def canvas_assignment_html(assignment, *, show_class=False):
             f'{esc(submission_label(assignment["submission_types"]))}</small>{link}</div></div>')
 
 def completed_canvas_history(assignments):
-    cutoff = (date.today()-timedelta(days=7)).isoformat()
+    cutoff = (family_today()-timedelta(days=7)).isoformat()
     return [a for a in assignments if a["completed"] and a["due_date"] and a["due_date"]>=cutoff]
 
 def canvas_history_html(assignments):
@@ -172,7 +196,7 @@ def manual_entries(conn):
         relation=""
         linked_columns="NULL AS linked_canvas_title, NULL AS linked_canvas_id"
     return conn.execute(f"""SELECT e.id,e.class_id,e.kind,e.details,e.done,e.parent_confirmed,
-        e.coaching_note,e.progress,e.completed_at,{origin},{planned},c.name AS class_name,
+        e.coaching_note,e.progress,e.completed_at,e.due_date,{origin},{planned},c.name AS class_name,
         {linked_columns}
         FROM entries e JOIN classes c ON c.id=e.class_id {relation}
         WHERE e.kind!='Nothing Tonight' AND c.enabled=1 AND c.archived=0
@@ -205,7 +229,7 @@ def student():
                 FROM lunch_buddies a JOIN bell_periods p ON p.id=a.period_id
                 WHERE instr(a.weekdays,?)>0 AND instr(p.weekdays,?)>0
                 ORDER BY start_time,a.name,a.id""",
-                (today(),today(),str(date.today().weekday()),str(date.today().weekday()))).fetchall()
+                (today(),today(),str(family_today().weekday()),str(family_today().weekday()))).fetchall()
         except sqlite3.OperationalError as exc:
             if "no such table" not in str(exc):
                 raise
@@ -275,11 +299,12 @@ def student():
             state='Parent confirmed' if item["parent_confirmed"] else 'Waiting for parent review' if item["done"] else 'Not Started'
             note=f'<p><small>Parent note: {esc(item["coaching_note"])}</small></p>' if item["coaching_note"] else ''
             parts.append(f'<div class="class"><span{status}><strong>{esc(item["kind"])}</strong> — '
-                         f'{esc(item["details"])}</span> · {esc(state)}{note}</div>')
+                         f'{esc(item["details"])}</span> · {esc(state)}{deadline_html(item)}{note}</div>')
         parts.append(f'''<form method="post" action="/classes/{cid}/entries">
             <label for="kind-{cid}">What needs to happen?</label><select id="kind-{cid}" name="kind">{options()}</select>
             <label for="details-{cid}">What exactly? (required)</label>
             <input type="text" id="details-{cid}" name="details" required maxlength="300" placeholder="e.g. Questions 1–10">
+            {deadline_fields()}
             <input type="hidden" name="submission_token" value="{secrets.token_hex(32)}">
             <button type="submit">Add task &amp; check in</button></form>
             <div class="row"><form class="inline" method="post" action="/classes/{cid}/nothing">
@@ -312,7 +337,8 @@ def quick_add():
                      '<label for="quick-details">A few words</label>'
                      '<input id="quick-details" name="details" type="text" maxlength="300" required '
                      'placeholder="e.g. finish problems 4–8" autofocus>'
-                     f'<input type="hidden" name="submission_token" value="{secrets.token_hex(32)}">'
+                     + deadline_fields()
+                     + f'<input type="hidden" name="submission_token" value="{secrets.token_hex(32)}">'
                      '<p><button type="submit">Save</button></p></form>'
                      '<script>(function(){const form=document.getElementById("quick-entry");'
                      'const field=document.getElementById("quick-class");'
@@ -361,7 +387,7 @@ def review():
             parts.extend(canvas_assignment_html(a) for a in canvas)
         if current:
             parts.append('<h4>Student and parent notes</h4><ul>')
-            parts.extend(f'<li>{esc(e["kind"])} — {esc(e["details"])}</li>' for e in current)
+            parts.extend(f'<li>{esc(e["kind"])} — {esc(e["details"])}' + (f' · {esc(deadline_label(e))}' if deadline_label(e) else '') + '</li>' for e in current)
             parts.append('</ul>')
         if not canvas and not current:
             parts.append('<p>No work recorded. Ask about this class before confirming.</p>')
@@ -435,7 +461,7 @@ def home():
                    if item["linked_canvas_title"] and not nested else "")
         return (f'<article class="{card_class}"><span class="task-class">{esc(item["class_name"])}</span>'
                 f'<span class="task-origin">{origin}</span><h4>{esc(item["details"])}</h4>'
-                f'<p class="muted">{esc(item["kind"])}</p>{related}'
+                f'<p class="muted">{esc(item["kind"])}</p>{deadline_html(item)}{related}'
                 f'<form class="task-progress" method="post" action="/entries/{item["id"]}/progress">'
                 f'<label for="progress-{item["id"]}">Progress</label>'
                 f'<select id="progress-{item["id"]}" name="progress">'
@@ -481,7 +507,8 @@ def home():
                      'Canvas official deadlines are not changed.</small></p>')
         for item in sorted(upcoming,key=lambda entry:(entry["planned_date"],entry["class_name"])):
             parts.append(f'<div class="class"><strong>{esc(item["class_name"])}</strong> · '
-                         f'{esc(item["details"])} · Work on {esc(friendly_date(item["planned_date"]))}</div>')
+                         f'{esc(item["details"])} · Work on {esc(friendly_date(item["planned_date"]))}'
+                         + (f' · {esc(deadline_label(item))}' if deadline_label(item) else '') + '</div>')
         parts.append('</details>')
     parts.append(canvas_history_html(canvas_assignments))
     return layout("My Afternoon","".join(parts))
@@ -545,7 +572,8 @@ def parent():
                      + options('Study') + '</select>'
                      '<label for="parent-details">What needs doing?</label>'
                      '<input id="parent-details" name="details" maxlength="300" required>'
-                     '<label for="parent-date">Work on (optional)</label>'
+                     + deadline_fields()
+                     + '<label for="parent-date">Work on (optional)</label>'
                      '<input id="parent-date" name="planned_date" type="date">'
                      '<p><button type="submit">Add to plan</button></p></form></section>')
     if not classes:
@@ -560,7 +588,7 @@ def parent():
             unfinished=[t for t in tasks_by_class.get(cid,[]) if not t["done"]]
             if unfinished:
                 parts.append('<ul>')
-                parts.extend(f'<li>{esc(t["kind"])} — {esc(t["details"])}</li>' for t in unfinished)
+                parts.extend(f'<li>{esc(t["kind"])} — {esc(t["details"])}' + (f' · {esc(deadline_label(t))}' if deadline_label(t) else '') + '</li>' for t in unfinished)
                 parts.append('</ul>')
             elif cid in checkins and checkins[cid]:
                 parts.append('<p><small>No new work reported tonight. Older unfinished tasks, if any, would appear above.</small></p>')
@@ -685,7 +713,7 @@ def settings():
 @router.get("/entries/{entry_id}/edit",response_class=HTMLResponse)
 def edit_page(entry_id: int):
     with db() as conn:
-        entry=conn.execute("""SELECT e.id,e.kind,e.details FROM entries e
+        entry=conn.execute("""SELECT e.id,e.kind,e.details,e.due_date FROM entries e
             JOIN classes c ON c.id=e.class_id WHERE e.id=? AND e.kind!='Nothing Tonight'
             AND c.enabled=1 AND c.archived=0""",(entry_id,)).fetchone()
     if entry is None: raise HTTPException(404,"Entry not found")
@@ -693,5 +721,6 @@ def edit_page(entry_id: int):
           '<label>Task type</label><select name="kind">'
           f'{options(entry["kind"])}</select><label>Details</label>'
           f'<input type="text" name="details" required maxlength="300" value="{esc(entry["details"])}">'
-          '<button type="submit">Save changes</button> <a href="/parent">Cancel</a></form></section>')
+          + deadline_fields(entry["due_date"])
+          + '<button type="submit">Save changes</button> <a href="/parent">Cancel</a></form></section>')
     return layout("Edit task",form)

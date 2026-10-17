@@ -1,12 +1,14 @@
-"""Generate one parent-configured expectation per applicable day.
+"""Generate one parent-configured expectation per applicable family-local day.
 
 Only called when a plan is viewed; no external scheduler is required.
 """
 from datetime import date
+from synccanvas.services.family_time import family_today
 
 
 def ensure_today(conn, day=None):
-    day = day or date.today()
+    if day is None:
+        day = family_today()
     if isinstance(day, str):
         day = date.fromisoformat(day)
     day_text = day.isoformat()
@@ -16,7 +18,6 @@ def ensure_today(conn, day=None):
     for row in rows:
         if row['frequency'] == 'weekdays' and day.weekday() >= 5:
             continue
-        # Keep generated tasks even when the parent later disables the rule.
         existing = conn.execute("""SELECT 1 FROM recurring_instances
             WHERE expectation_id=? AND work_date=?""", (row['id'], day_text)).fetchone()
         if existing:
