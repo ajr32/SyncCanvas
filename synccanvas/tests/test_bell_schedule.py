@@ -94,7 +94,7 @@ def test_scheduled_classes_sort_before_unscheduled(tmp_path, monkeypatch):
         def today():
             return RealDate(2026, 10, 19)  # Monday
 
-    monkeypatch.setattr(pages, "date", FakeDate)
+    monkeypatch.setattr(pages, "family_today", FakeDate.today)
 
     with database.db() as conn:
         conn.execute(
