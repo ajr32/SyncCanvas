@@ -65,6 +65,14 @@ def ensure_entry_columns(conn):
             "priority TEXT NOT NULL DEFAULT 'normal'"
         )
 
+    # Preserve optional deadlines for manual entries (#61).
+    if "due_date" not in columns:
+        conn.execute("ALTER TABLE entries ADD COLUMN due_date TEXT")
+    if "due_time" not in columns:
+        conn.execute("ALTER TABLE entries ADD COLUMN due_time TEXT")
+    if "priority" not in columns:
+        conn.execute("ALTER TABLE entries ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'")
+
     if "parent_confirmed" not in columns:
         conn.execute(
             "ALTER TABLE entries ADD COLUMN "
