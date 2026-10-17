@@ -61,3 +61,29 @@ def validate_task_details(
         )
 
     return kind, details
+
+
+from datetime import date, time
+
+
+def validate_deadline(due_date="", due_time="", priority="normal"):
+    due_date = (due_date or "").strip()
+    due_time = (due_time or "").strip()
+    priority = (priority or "normal").strip().lower()
+    if priority not in ("normal", "low", "high"):
+        raise ValueError("Invalid priority")
+    if due_date:
+        try:
+            if date.fromisoformat(due_date).isoformat() != due_date:
+                raise ValueError()
+        except ValueError as exc:
+            raise ValueError("Invalid due date") from exc
+    if due_time:
+        if not due_date:
+            raise ValueError("Due time requires a due date")
+        try:
+            if len(due_time) != 5 or time.fromisoformat(due_time).strftime("%H:%M") != due_time:
+                raise ValueError()
+        except ValueError as exc:
+            raise ValueError("Invalid due time") from exc
+    return due_date or None, due_time or None, priority
