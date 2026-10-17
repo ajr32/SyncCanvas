@@ -78,6 +78,22 @@ def layout(title, content):
 def today():
     return date.today().isoformat()
 
+def deadline_fields(due_date="", due_time="", priority="normal"):
+    fields = (f'<label>Due date (optional)<input type="date" name="due_date" value="{esc(due_date or "")}"></label>'
+              f'<label>Due time (optional)<input type="time" name="due_time" value="{esc(due_time or "")}"></label>'
+              '<label>Priority<select name="priority">')
+    for level in ("normal", "low", "high"):
+        fields += f'<option value="{level}"{" selected" if level == (priority or "normal") else ""}>{level.title()}</option>'
+    return fields + "</select></label>"
+
+
+def deadline_label(item):
+    if not item["due_date"]:
+        return ""
+    time_label = " at " + american_time(item["due_time"]) if item["due_time"] else ""
+    return f'Due {friendly_date(item["due_date"])}{time_label} · {(item["priority"] or "normal").title()} priority'
+
+
 def options(selected=""):
     return "".join(f'<option value="{esc(kind)}"{" selected" if kind == selected else ""}>{esc(kind)}</option>' for kind in KINDS)
 
@@ -172,7 +188,7 @@ def manual_entries(conn):
         relation=""
         linked_columns="NULL AS linked_canvas_title, NULL AS linked_canvas_id"
     return conn.execute(f"""SELECT e.id,e.class_id,e.kind,e.details,e.done,e.parent_confirmed,
-        e.coaching_note,e.progress,e.completed_at,{origin},{planned},c.name AS class_name,
+        e.coaching_note,e.progress,e.completed_at,e.due_date,e.due_time,e.priority,{origin},{planned},c.name AS class_name,
         {linked_columns}
         FROM entries e JOIN classes c ON c.id=e.class_id {relation}
         WHERE e.kind!='Nothing Tonight' AND c.enabled=1 AND c.archived=0
@@ -280,6 +296,7 @@ def student():
             <label for="kind-{cid}">What needs to happen?</label><select id="kind-{cid}" name="kind">{options()}</select>
             <label for="details-{cid}">What exactly? (required)</label>
             <input type="text" id="details-{cid}" name="details" required maxlength="300" placeholder="e.g. Questions 1–10">
+            {deadline_fields()}
             <input type="hidden" name="submission_token" value="{secrets.token_hex(32)}">
             <button type="submit">Add task &amp; check in</button></form>
             <div class="row"><form class="inline" method="post" action="/classes/{cid}/nothing">
@@ -312,6 +329,7 @@ def quick_add():
                      '<label for="quick-details">A few words</label>'
                      '<input id="quick-details" name="details" type="text" maxlength="300" required '
                      'placeholder="e.g. finish problems 4–8" autofocus>'
+                     + deadline_fields()
                      f'<input type="hidden" name="submission_token" value="{secrets.token_hex(32)}">'
                      '<p><button type="submit">Save</button></p></form>'
                      '<script>(function(){const form=document.getElementById("quick-entry");'
@@ -435,7 +453,8 @@ def home():
                    if item["linked_canvas_title"] and not nested else "")
         return (f'<article class="{card_class}"><span class="task-class">{esc(item["class_name"])}</span>'
                 f'<span class="task-origin">{origin}</span><h4>{esc(item["details"])}</h4>'
-                f'<p class="muted">{esc(item["kind"])}</p>{related}'
+                f'<p class="muted">{esc(item["kind"])}</p>'
+                + (f'<p class="muted">{esc(deadline_label(item))}</p>' if item["due_date"] else "") + related
                 f'<form class="task-progress" method="post" action="/entries/{item["id"]}/progress">'
                 f'<label for="progress-{item["id"]}">Progress</label>'
                 f'<select id="progress-{item["id"]}" name="progress">'
@@ -545,6 +564,7 @@ def parent():
                      + options('Study') + '</select>'
                      '<label for="parent-details">What needs doing?</label>'
                      '<input id="parent-details" name="details" maxlength="300" required>'
+                     + deadline_fields()
                      '<label for="parent-date">Work on (optional)</label>'
                      '<input id="parent-date" name="planned_date" type="date">'
                      '<p><button type="submit">Add to plan</button></p></form></section>')
@@ -560,7 +580,7 @@ def parent():
             unfinished=[t for t in tasks_by_class.get(cid,[]) if not t["done"]]
             if unfinished:
                 parts.append('<ul>')
-                parts.extend(f'<li>{esc(t["kind"])} — {esc(t["details"])}</li>' for t in unfinished)
+                parts.extend(f'<li>{esc(t["kind"])} — {esc(t["details"])}' + (f' · {esc(deadline_label(t))}' if t["due_date"] else '') + '</li>' for t in unfinished)
                 parts.append('</ul>')
             elif cid in checkins and checkins[cid]:
                 parts.append('<p><small>No new work reported tonight. Older unfinished tasks, if any, would appear above.</small></p>')
@@ -685,7 +705,7 @@ def settings():
 @router.get("/entries/{entry_id}/edit",response_class=HTMLResponse)
 def edit_page(entry_id: int):
     with db() as conn:
-        entry=conn.execute("""SELECT e.id,e.kind,e.details FROM entries e
+        entry=conn.execute("""SELECT e.id,e.kind,e.details,e.due_date,e.due_time,e.priority FROM entries e
             JOIN classes c ON c.id=e.class_id WHERE e.id=? AND e.kind!='Nothing Tonight'
             AND c.enabled=1 AND c.archived=0""",(entry_id,)).fetchone()
     if entry is None: raise HTTPException(404,"Entry not found")
@@ -693,5 +713,6 @@ def edit_page(entry_id: int):
           '<label>Task type</label><select name="kind">'
           f'{options(entry["kind"])}</select><label>Details</label>'
           f'<input type="text" name="details" required maxlength="300" value="{esc(entry["details"])}">'
-          '<button type="submit">Save changes</button> <a href="/parent">Cancel</a></form></section>')
+          + deadline_fields(entry["due_date"], entry["due_time"], entry["priority"])
+          + '<button type="submit">Save changes</button> <a href="/parent">Cancel</a></form></section>')
     return layout("Edit task",form)
