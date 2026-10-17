@@ -1,6 +1,7 @@
 """SyncCanvas local-only prototype. Do not expose without authentication."""
 from __future__ import annotations
 from dataclasses import asdict
+import sqlite3
 from fastapi import FastAPI, Form, HTTPException
 from fastapi.responses import RedirectResponse
 from synccanvas.canvas_settings import get_canvas_settings
@@ -56,15 +57,22 @@ def add_class(name: str = Form(...)):
     return go()
 
 @app.post("/classes/{class_id}/entries")
-def add_entry(class_id: int, kind: str = Form(...), details: str = Form(...)):
+def add_entry(class_id: int, kind: str = Form(...), details: str = Form(...), submission_token: str = Form("")):
     try:
         task = validate_task(TaskInput(class_id=class_id, kind=kind, details=details))
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
+    if submission_token and (len(submission_token) != 64 or any(c not in "0123456789abcdef" for c in submission_token)):
+        raise HTTPException(422, "Invalid submission token")
     with db() as conn:
         require_class(conn, task.class_id)
-        conn.execute("INSERT INTO entries(class_id, kind, details) VALUES (?, ?, ?)",
-                     (task.class_id, task.kind, task.details))
+        try:
+            conn.execute("INSERT INTO entries(class_id, kind, details, submission_token) VALUES (?, ?, ?, ?)",
+                         (task.class_id, task.kind, task.details, submission_token or None))
+        except sqlite3.IntegrityError as error:
+            if submission_token and "submission_token" in str(error):
+                return go()  # Retry of the same form; do not insert another task.
+            raise
         set_checkin(conn, task.class_id)
     return go()
 
