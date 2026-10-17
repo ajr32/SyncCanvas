@@ -33,7 +33,7 @@ def test_lunch_buddies_appear_on_matching_day(tmp_path, monkeypatch):
         @staticmethod
         def today():
             return RealDate(2026, 10, 19)
-    monkeypatch.setattr(pages, 'date', Monday)
+    monkeypatch.setattr(pages, 'family_today', Monday.today)
     with database.db() as conn:
         conn.execute("INSERT INTO bell_periods(id,label,start_time,end_time,weekdays) VALUES(1,'L','11:30','12:00','01234')")
         conn.execute("INSERT INTO lunch_buddies(name,period_id,weekdays) VALUES('Chess Lunch',1,'0')")
