@@ -10,7 +10,7 @@ class Monday:
 
 def setup(tmp_path,monkeypatch):
     monkeypatch.setattr(database,'DB_PATH',tmp_path/'days.sqlite3')
-    monkeypatch.setattr(pages,'date',Monday)
+    monkeypatch.setattr(pages,'family_today',Monday.today)
     with database.db() as conn:
         conn.execute("INSERT INTO classes(id,name) VALUES(1,'Math')")
         conn.execute("INSERT INTO bell_periods(id,label,start_time,end_time,weekdays) VALUES(1,'1','08:00','08:50','01234')")
