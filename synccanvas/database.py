@@ -84,6 +84,42 @@ def db():
         )
 
         ensure_class_columns(conn)
+        conn.execute("""CREATE TABLE IF NOT EXISTS bell_periods (
+            id INTEGER PRIMARY KEY, label TEXT NOT NULL UNIQUE,
+            start_time TEXT NOT NULL, end_time TEXT NOT NULL,
+            weekdays TEXT NOT NULL DEFAULT '01234')""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS school_days (
+            day TEXT PRIMARY KEY,
+            kind TEXT NOT NULL CHECK(kind IN ('closed','shortened')),
+            note TEXT NOT NULL DEFAULT ''
+        )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS school_day_periods (
+            day TEXT NOT NULL REFERENCES school_days(day) ON DELETE CASCADE,
+            period_id INTEGER NOT NULL REFERENCES bell_periods(id) ON DELETE CASCADE,
+            start_time TEXT NOT NULL, end_time TEXT NOT NULL,
+            PRIMARY KEY(day, period_id)
+        )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS class_periods (
+            class_id INTEGER NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+            period_id INTEGER NOT NULL REFERENCES bell_periods(id) ON DELETE CASCADE,
+            PRIMARY KEY(class_id, period_id))""")
+
+        conn.execute("""CREATE TABLE IF NOT EXISTS lunch_buddies (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            period_id INTEGER NOT NULL REFERENCES bell_periods(id) ON DELETE CASCADE,
+            weekdays TEXT NOT NULL DEFAULT '01234'
+        )""")
+
+        conn.execute("""CREATE TABLE IF NOT EXISTS lunch_tasks (
+            id INTEGER PRIMARY KEY,
+            activity_id INTEGER NOT NULL REFERENCES lunch_buddies(id) ON DELETE CASCADE,
+            details TEXT NOT NULL,
+            done INTEGER NOT NULL DEFAULT 0,
+            parent_confirmed INTEGER NOT NULL DEFAULT 0,
+            coaching_note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )""")
 
         conn.execute(
             """

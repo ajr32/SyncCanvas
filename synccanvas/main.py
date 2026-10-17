@@ -13,6 +13,7 @@ from synccanvas.services.canvas_import_worker import CanvasImportWorker
 from synccanvas.services.sync_coordinator import sync_coordinator
 from synccanvas.services.parent_review import ParentReviewError, confirm_task, return_task, save_coaching_note
 from synccanvas.services.tasks import TaskInput, validate_task, validate_task_details
+from synccanvas.parent_schedule import router as parent_schedule_router
 
 app = FastAPI(title="SyncCanvas (local prototype)")
 
@@ -162,3 +163,8 @@ def sync_run_from_page():
 
 app.include_router(pages_router)
 app.include_router(parent_classes_router)
+from synccanvas.lunch_buddies import router as lunch_buddies_router
+app.include_router(parent_schedule_router)
+app.include_router(lunch_buddies_router)
+from synccanvas.school_days import router as school_days_router
+app.include_router(school_days_router)

@@ -1,7 +1,9 @@
+
 """Local HTML pages for the SyncCanvas family planner."""
 import html
 import json
-from datetime import date, timedelta
+import sqlite3
+from datetime import date, datetime, timedelta
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import HTMLResponse
 from synccanvas.database import db
@@ -16,6 +18,12 @@ ACTIVE_CLASSES = "SELECT id, name FROM classes WHERE enabled=1 AND archived=0 OR
 
 def esc(value):
     return html.escape(str(value), quote=True)
+
+
+def american_time(value):
+    if not value:
+        return ""
+    return datetime.strptime(str(value), "%H:%M").strftime("%I:%M %p").lstrip("0")
 
 def layout(title, content):
     css = """
@@ -56,7 +64,33 @@ def options(selected=""):
     return "".join(f'<option value="{esc(kind)}"{" selected" if kind == selected else ""}>{esc(kind)}</option>' for kind in KINDS)
 
 def get_active_classes(conn):
-    return conn.execute(ACTIVE_CLASSES).fetchall()
+    weekday = str(date.today().weekday())
+    day = date.today().isoformat()
+    try:
+        exception = conn.execute('SELECT kind FROM school_days WHERE day=?', (day,)).fetchone()
+        if exception and exception['kind']=='closed':
+            return conn.execute("SELECT id,name,NULL AS period_label,NULL AS period_start FROM classes WHERE enabled=1 AND archived=0 ORDER BY sort_order,id").fetchall()
+    except sqlite3.OperationalError as exc:
+        if 'no such table' not in str(exc): raise
+    try:
+        return conn.execute("""
+        SELECT c.id, c.name,
+            (SELECT p.label FROM class_periods cp JOIN bell_periods p
+             ON p.id=cp.period_id WHERE cp.class_id=c.id
+             AND instr(p.weekdays, ?) > 0
+             ORDER BY p.start_time, p.id LIMIT 1) AS period_label,
+            (SELECT COALESCE((SELECT sp.start_time FROM school_day_periods sp WHERE sp.period_id=p.id AND sp.day=?),p.start_time) FROM class_periods cp JOIN bell_periods p
+             ON p.id=cp.period_id WHERE cp.class_id=c.id
+             AND instr(p.weekdays, ?) > 0
+             ORDER BY COALESCE((SELECT sp.start_time FROM school_day_periods sp WHERE sp.period_id=p.id AND sp.day=?),p.start_time), p.id LIMIT 1) AS period_start
+        FROM classes c WHERE c.enabled=1 AND c.archived=0
+        ORDER BY CASE WHEN period_start IS NULL THEN 1 ELSE 0 END,
+                 period_start, c.sort_order, c.id
+    """, (weekday, day, weekday, day)).fetchall()
+    except sqlite3.OperationalError as exc:
+        if "no such table" not in str(exc):
+            raise
+        return conn.execute("SELECT id,name,NULL AS period_label,NULL AS period_start FROM classes WHERE enabled=1 AND archived=0 ORDER BY sort_order,id").fetchall()
 
 def get_canvas_assignments(conn):
     return conn.execute("""SELECT a.id,a.title,a.due_date,a.due_at,a.html_url,
@@ -124,9 +158,39 @@ def checkin_label(cid,checkins):
 def student():
     with db() as conn:
         classes=get_active_classes(conn)
+        try:
+            school_exception=conn.execute('SELECT kind,note FROM school_days WHERE day=?',(today(),)).fetchone()
+        except sqlite3.OperationalError as exc:
+            if 'no such table' not in str(exc): raise
+            school_exception=None
         canvas_assignments=get_canvas_assignments(conn)
         entries=manual_entries(conn)
         checkins=checkins_today(conn)
+        try:
+            lunch_activities=conn.execute("""SELECT a.id,a.name,p.label AS period_label,
+                COALESCE((SELECT sp.start_time FROM school_day_periods sp WHERE sp.day=? AND sp.period_id=p.id),p.start_time) AS start_time,
+                COALESCE((SELECT sp.end_time FROM school_day_periods sp WHERE sp.day=? AND sp.period_id=p.id),p.end_time) AS end_time
+                FROM lunch_buddies a JOIN bell_periods p ON p.id=a.period_id
+                WHERE instr(a.weekdays,?)>0 AND instr(p.weekdays,?)>0
+                ORDER BY start_time,a.name,a.id""",
+                (today(),today(),str(date.today().weekday()),str(date.today().weekday()))).fetchall()
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc):
+                raise
+            lunch_activities=[]
+        try:
+            lunch_tasks=conn.execute("""SELECT t.*,a.name AS activity_name
+                FROM lunch_tasks t JOIN lunch_buddies a ON a.id=t.activity_id
+                ORDER BY t.id DESC""").fetchall()
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc):
+                raise
+            lunch_tasks=[]
+    if school_exception and school_exception['kind']=='closed':
+        lunch_activities=[]
+    tasks_by_lunch={}
+    for task in lunch_tasks:
+        tasks_by_lunch.setdefault(task['activity_id'], []).append(task)
     by_class={}
     for entry in entries: by_class.setdefault(entry["class_id"],[]).append(entry)
     canvas_by_class={}
@@ -145,12 +209,31 @@ def student():
             if(status.state!=='running'){window.location.reload();return;}
             }catch(error){failures++;if(failures>=5){window.location.reload();return;}}
             window.setTimeout(checkSync,1500);}window.setTimeout(checkSync,1500);}());</script>''')
+    if school_exception:
+        kind_label='No school today' if school_exception['kind']=='closed' else 'Shortened / special school day'
+        parts.append('<section class="panel"><h3>'+kind_label+'</h3><p>'+esc(school_exception['note'])+'</p></section>')
+    if lunch_activities:
+        parts.append('<section class="panel"><h3>Lunch Buddies today</h3>')
+        for activity in lunch_activities:
+            parts.append(f'<p><strong>{esc(activity["name"])}</strong> · Period {esc(activity["period_label"])} '
+                         f'({esc(american_time(activity["start_time"]))}–{esc(american_time(activity["end_time"]))})</p>')
+            aid=activity['id']
+            for task in tasks_by_lunch.get(aid, []):
+                status='Parent confirmed' if task['parent_confirmed'] else 'Waiting for parent review' if task['done'] else 'Not started'
+                parts.append(f'<div class="class"><strong>{esc(task["details"])}</strong> · {status}</div>')
+                if task['coaching_note']:
+                    parts.append(f'<p><small>Parent note: {esc(task["coaching_note"])}</small></p>')
+            parts.append(f'<form method="post" action="/parent/lunch-buddies/{aid}/tasks">'
+                         '<label>What happened or what needs to be done?</label>'
+                         '<input type="text" name="details" maxlength="300" required placeholder="Add a note or task">'
+                         '<button type="submit">Add task</button></form>')
+        parts.append('</section>')
     if not classes:
         parts.append('<section class="panel"><p>No active classes are available yet. Classes are managed from the Parent page.</p></section>')
     for cls in classes:
         cid=cls["id"]
         css="unchecked" if cid not in checkins else "checked"
-        parts.append(f'<section class="panel"><h3>{esc(cls["name"])}</h3>'
+        parts.append(f'<section class="panel"><h3>{esc(cls["name"])}' + (f' · Period {esc(cls["period_label"])} ({esc(american_time(cls["period_start"]))})' if cls["period_label"] else '') + '</h3>'
                      f'<p class="status {css}">{checkin_label(cid,checkins)}</p>')
         if canvas_by_class.get(cid):
             parts.append('<h4>Canvas assignments to do</h4>')
@@ -181,7 +264,7 @@ def review():
     parts=[f'<section class="panel"><p>Before leaving school, check every class for today ({esc(today())}). '
            'Make sure you have what you need to bring home.</p>']
     for cls in classes:
-        parts.append(f'<div class="class"><strong>{esc(cls["name"])}</strong> — '
+        parts.append(f'<div class="class"><strong>{esc(cls["name"])}</strong>' + (f' · Period {esc(cls["period_label"])}' if cls["period_label"] else '') + ' — '
                      f'{esc(checkin_label(cls["id"],checked))} <a href="/">Open class</a></div>')
     return layout("Course Check-Out","".join(parts)+"</section>")
 
@@ -190,6 +273,9 @@ def home():
     with db() as conn:
         canvas_assignments=get_canvas_assignments(conn)
         entries=[e for e in manual_entries(conn) if not e["done"]]
+        lunch_open=conn.execute("""SELECT t.id,t.details,a.name AS activity_name
+            FROM lunch_tasks t JOIN lunch_buddies a ON a.id=t.activity_id
+            WHERE t.done=0 ORDER BY t.id DESC""").fetchall()
     parts=['<section class="panel"><h3>Canvas assignments to do</h3>',
            '<p>All incomplete assignments, including overdue work, sorted by due date.</p>']
     incomplete=[a for a in canvas_assignments if not a["completed"]]
@@ -205,6 +291,13 @@ def home():
                      f'{esc(item["kind"])} — {esc(item["details"])} '
                      f'<form class="inline" method="post" action="/entries/{item["id"]}/done">'
                      '<button type="submit">Done</button></form></div>')
+    if lunch_open:
+        parts.append('<h3>Lunch Buddies tasks</h3>')
+        for task in lunch_open:
+            parts.append(f'<div class="class"><strong>{esc(task["activity_name"])}</strong>: '
+                         f'{esc(task["details"])} '
+                         f'<form class="inline" method="post" action="/parent/lunch-buddies/tasks/{task["id"]}/done">'
+                         '<button type="submit">Done</button></form></div>')
     return layout("Homework Review","".join(parts)+"</section>")
 
 @router.get("/parent",response_class=HTMLResponse)
@@ -213,6 +306,14 @@ def parent():
         classes=get_active_classes(conn)
         checkins=checkins_today(conn)
         tasks=manual_entries(conn)
+        try:
+            lunch_tasks=conn.execute("""SELECT t.*,a.name AS activity_name
+                FROM lunch_tasks t JOIN lunch_buddies a ON a.id=t.activity_id
+                ORDER BY t.id DESC""").fetchall()
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc):
+                raise
+            lunch_tasks=[]
     tasks_by_class={}
     for task in tasks: tasks_by_class.setdefault(task["class_id"],[]).append(task)
     checked_count=sum(c["id"] in checkins for c in classes)
@@ -222,7 +323,7 @@ def parent():
     ask_teacher=[t for t in tasks if t["kind"]=="Ask Teacher" and not t["done"]]
     parts=['<section class="panel"><h3>Class administration</h3>',
            '<p>Search Canvas, link courses, and manage enabled, disabled, or archived classes.</p>',
-           '<p><a href="/parent/classes">Manage Classes</a></p></section>',
+           '<p><a href="/parent/classes">Manage Classes</a> · <a href="/parent/schedule">Bell Schedule</a> · <a href="/parent/school-days">School Days</a> · <a href="/parent/lunch-buddies">Lunch Buddies</a></p></section>',
            '<section class="panel"><h3>Afternoon review</h3>',
            f'<p><strong>{checked_count}/{len(classes)}</strong> classes checked today · '
            f'<strong>{open_count}</strong> unfinished tasks · '
@@ -237,7 +338,7 @@ def parent():
         for cls in missing+[c for c in classes if c["id"] in checkins]:
             cid=cls["id"]
             css="unchecked" if cid not in checkins else "checked"
-            parts.append(f'<div class="class"><strong>{esc(cls["name"])}</strong> — '
+            parts.append(f'<div class="class"><strong>{esc(cls["name"])}</strong>' + (f' · Period {esc(cls["period_label"])}' if cls["period_label"] else '') + ' — '
                          f'<span class="status {css}">{esc(checkin_label(cid,checkins))}</span>')
             unfinished=[t for t in tasks_by_class.get(cid,[]) if not t["done"]]
             if unfinished:
@@ -264,10 +365,12 @@ def parent():
                              f'<label for="note-{tid}">Coaching note (optional)</label>'
                              f'<input id="note-{tid}" name="note" maxlength="300" value="{esc(task["coaching_note"])}">'
                              '<button class="secondary" type="submit">Save note</button></form>')
-                parts.append(f'<p><a href="/entries/{tid}/edit">Edit task</a> '
-                             f'<form class="inline" method="post" action="/parent/entries/{tid}/delete" '
-                             'onsubmit="return confirm(\'Delete this task permanently?\');">'
-                             '<button class="danger" type="submit">Delete task</button></form></p>')
+                parts.append(
+                    f'<p><a href="/entries/{tid}/edit">Edit task</a> '
+                    f'<form class="inline" method="post" action="/parent/entries/{tid}/delete" '
+                    'onsubmit="return confirm(&quot;Delete this task permanently?&quot;);">'
+                    '<button class="danger" type="submit">Delete task</button></form></p>'
+                )
             parts.append('</div>')
         parts.append('</section>')
     if ask_teacher:
@@ -275,6 +378,25 @@ def parent():
         for task in ask_teacher:
             cls_name=next((c["name"] for c in classes if c["id"]==task["class_id"]),"Unknown class")
             parts.append(f'<p><strong>{esc(cls_name)}</strong>: {esc(task["details"])}</p>')
+        parts.append('</section>')
+    if lunch_tasks:
+        parts.append('<section class="panel"><h3>Lunch Buddies tasks and notes</h3>')
+        for task in lunch_tasks:
+            tid=task['id']
+            state='Parent confirmed' if task['parent_confirmed'] else 'Student says done — review needed' if task['done'] else 'Not started'
+            parts.append(f'<div class="class"><strong>{esc(task["activity_name"])}</strong>: '
+                         f'{esc(task["details"])} · {state}</div>')
+            if task['done'] and not task['parent_confirmed']:
+                parts.append(f'<form class="inline" method="post" action="/parent/lunch-buddies/tasks/{tid}/confirm">'
+                             '<button type="submit">Confirm complete</button></form> '
+                             f'<form class="inline" method="post" action="/parent/lunch-buddies/tasks/{tid}/return">'
+                             '<button class="secondary" type="submit">Needs another look</button></form>')
+            parts.append(f'<form method="post" action="/parent/lunch-buddies/tasks/{tid}/note">'
+                         f'<label>Coaching note</label><input name="note" maxlength="300" value="{esc(task["coaching_note"])}">'
+                         '<button class="secondary" type="submit">Save note</button></form>')
+            parts.append(f'<form method="post" action="/parent/lunch-buddies/tasks/{tid}/delete" '
+                         'onsubmit="return confirm(&quot;Delete this task permanently?&quot;);">'
+                         '<button class="danger" type="submit">Delete task</button></form>')
         parts.append('</section>')
     return layout("Parent Page","".join(parts))
 
