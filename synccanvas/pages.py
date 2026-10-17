@@ -143,7 +143,7 @@ def canvas_history_html(assignments):
 
 def manual_entries(conn):
     return conn.execute("""SELECT e.id,e.class_id,e.kind,e.details,e.done,e.parent_confirmed,
-        e.coaching_note,e.progress,c.name AS class_name FROM entries e JOIN classes c ON c.id=e.class_id
+        e.coaching_note,e.progress,e.completed_at,c.name AS class_name FROM entries e JOIN classes c ON c.id=e.class_id
         WHERE e.kind!='Nothing Tonight' AND c.enabled=1 AND c.archived=0
         ORDER BY c.sort_order,c.id,e.id DESC""").fetchall()
 
@@ -359,7 +359,9 @@ def parent():
                 tid=task["id"]
                 if task["done"]:
                     state='Parent confirmed' if task["parent_confirmed"] else 'Student says done — review needed'
-                    parts.append(f'<p><small>{esc(task["kind"])} — {esc(task["details"])}: {state}</small></p>')
+                    parts.append(f'<p><small>{esc(task["kind"])} — {esc(task["details"])}: {state}'
+                                 + (f' · Completed {esc(task["completed_at"])} UTC' if task["completed_at"] else '')
+                                 + '</small></p>')
                 if task["done"] and not task["parent_confirmed"]:
                     parts.append(f'<form class="inline" method="post" action="/parent/entries/{tid}/confirm">'
                                  '<button type="submit">Confirm complete</button></form> '

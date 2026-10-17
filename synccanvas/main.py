@@ -116,7 +116,7 @@ def delete_entry(entry_id: int):
 def toggle_entry(entry_id: int):
     """Legacy endpoint retained for existing tests; UI only exposes Done in Homework Review."""
     with db() as conn:
-        result = conn.execute("""UPDATE entries SET done=1-done, progress=CASE WHEN done=0 THEN 'done' ELSE 'not_started' END, parent_confirmed=0
+        result = conn.execute("""UPDATE entries SET done=1-done, progress=CASE WHEN done=0 THEN 'done' ELSE 'not_started' END, completed_at=CASE WHEN done=0 THEN CURRENT_TIMESTAMP ELSE NULL END, parent_confirmed=0
             WHERE id=? AND kind != 'Nothing Tonight'""", (entry_id,))
         if not result.rowcount:
             raise HTTPException(404, "Entry not found")
@@ -129,9 +129,9 @@ def update_entry_progress(entry_id: int, progress: str = Form(...)):
     with db() as conn:
         result = conn.execute(
             """UPDATE entries SET progress=?, done=?, parent_confirmed=CASE
-            WHEN ?='done' THEN parent_confirmed ELSE 0 END
+            WHEN ?='done' THEN parent_confirmed ELSE 0 END, completed_at=CASE WHEN ?='done' THEN COALESCE(completed_at,CURRENT_TIMESTAMP) ELSE NULL END
             WHERE id=? AND kind != 'Nothing Tonight'""",
-            (progress, int(progress == "done"), progress, entry_id),
+            (progress, int(progress == "done"), progress, progress, entry_id),
         )
         if not result.rowcount:
             raise HTTPException(404, "Entry not found")
@@ -142,7 +142,7 @@ def update_entry_progress(entry_id: int, progress: str = Form(...)):
 def mark_entry_done(entry_id: int):
     """Idempotent completion action for Homework Review."""
     with db() as conn:
-        result = conn.execute("""UPDATE entries SET done=1, progress='done', parent_confirmed=0
+        result = conn.execute("""UPDATE entries SET done=1, progress='done', completed_at=CURRENT_TIMESTAMP, parent_confirmed=0
             WHERE id=? AND done=0 AND kind != 'Nothing Tonight'""", (entry_id,))
         if not result.rowcount:
             raise HTTPException(409, "Task not found or already done")

@@ -52,6 +52,10 @@ def ensure_entry_columns(conn):
         conn.execute("ALTER TABLE entries ADD COLUMN submission_token TEXT")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_entries_submission_token ON entries(submission_token)")
 
+    if "completed_at" not in columns:
+        conn.execute("ALTER TABLE entries ADD COLUMN completed_at TEXT")
+        # Legacy completed tasks have no reliable completion time; do not invent one.
+
     if "progress" not in columns:
         conn.execute(
             "ALTER TABLE entries ADD COLUMN "

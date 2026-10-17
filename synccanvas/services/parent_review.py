@@ -45,6 +45,8 @@ def return_task(entry_id: int) -> None:
             """
             UPDATE entries
             SET done = 0,
+                progress = 'not_started',
+                completed_at = NULL,
                 parent_confirmed = 0
             WHERE id = ?
               AND done = 1
