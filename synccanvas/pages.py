@@ -143,7 +143,7 @@ def canvas_history_html(assignments):
 
 def manual_entries(conn):
     return conn.execute("""SELECT e.id,e.class_id,e.kind,e.details,e.done,e.parent_confirmed,
-        e.coaching_note,c.name AS class_name FROM entries e JOIN classes c ON c.id=e.class_id
+        e.coaching_note,e.progress,c.name AS class_name FROM entries e JOIN classes c ON c.id=e.class_id
         WHERE e.kind!='Nothing Tonight' AND c.enabled=1 AND c.archived=0
         ORDER BY c.sort_order,c.id,e.id DESC""").fetchall()
 
@@ -291,8 +291,12 @@ def home():
     for item in entries:
         parts.append(f'<div class="class"><strong>{esc(item["class_name"])}</strong>: '
                      f'{esc(item["kind"])} — {esc(item["details"])} '
-                     f'<form class="inline" method="post" action="/entries/{item["id"]}/done">'
-                     '<button type="submit">Done</button></form></div>')
+                     f'<form class="inline" method="post" action="/entries/{item["id"]}/progress">'
+                     f'<select name="progress" aria-label="Progress for {esc(item["details"])}">'
+                     f'<option value="not_started"{" selected" if item["progress"]=="not_started" else ""}>Not started</option>'
+                     f'<option value="in_progress"{" selected" if item["progress"]=="in_progress" else ""}>In progress</option>'
+                     f'<option value="done">Done</option></select>'
+                     '<button type="submit">Save progress</button></form></div>')
     if lunch_open:
         parts.append('<h3>Lunch Buddies tasks</h3>')
         for task in lunch_open:
