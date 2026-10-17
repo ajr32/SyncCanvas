@@ -16,7 +16,7 @@ def test_lunch_task_lifecycle(tmp_path, monkeypatch):
         @staticmethod
         def today():
             return RealDate(2026, 10, 19)
-    monkeypatch.setattr(pages, 'date', Monday)
+    monkeypatch.setattr(pages, 'family_today', Monday.today)
     with database.db() as conn:
         setup_lunch(conn)
     client = TestClient(app)
