@@ -43,7 +43,8 @@ def client(monkeypatch):
             progress TEXT NOT NULL DEFAULT 'not_started',
             completed_at TEXT,
             origin TEXT NOT NULL DEFAULT 'student',
-            planned_date TEXT
+            planned_date TEXT,
+            due_date TEXT
         );
 
         CREATE TABLE checkins (
