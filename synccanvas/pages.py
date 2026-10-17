@@ -125,9 +125,9 @@ def get_active_classes(conn):
              AND instr(p.weekdays, ?) > 0
              ORDER BY COALESCE((SELECT sp.start_time FROM school_day_periods sp WHERE sp.period_id=p.id AND sp.day=?),p.start_time), p.id LIMIT 1) AS period_start
         FROM classes c WHERE c.enabled=1 AND c.archived=0
-        ORDER BY CASE WHEN period_start IS NULL THEN 1 ELSE 0 END,
+        ORDER BY CASE WHEN (SELECT 1 FROM class_periods cp JOIN bell_periods p ON p.id=cp.period_id WHERE cp.class_id=c.id AND instr(p.weekdays, ?) > 0 LIMIT 1) IS NULL THEN 1 ELSE 0 END,
                  period_start, c.sort_order, c.id
-    """, (weekday, day, weekday, day)).fetchall()
+    """, (weekday, day, weekday, day, weekday)).fetchall()
     except sqlite3.OperationalError as exc:
         if "no such table" not in str(exc):
             raise
