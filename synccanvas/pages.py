@@ -2,6 +2,7 @@
 """Local HTML pages for the SyncCanvas family planner."""
 import html
 import json
+import secrets
 import sqlite3
 from datetime import date, datetime, timedelta
 from fastapi import APIRouter, HTTPException
@@ -248,6 +249,7 @@ def student():
             <label for="kind-{cid}">What needs to happen?</label><select id="kind-{cid}" name="kind">{options()}</select>
             <label for="details-{cid}">What exactly? (required)</label>
             <input type="text" id="details-{cid}" name="details" required maxlength="300" placeholder="e.g. Questions 1–10">
+            <input type="hidden" name="submission_token" value="{secrets.token_hex(32)}">
             <button type="submit">Add task &amp; check in</button></form>
             <div class="row"><form class="inline" method="post" action="/classes/{cid}/nothing">
             <button class="secondary" type="submit">Nothing Tonight</button></form>
