@@ -48,6 +48,10 @@ def ensure_entry_columns(conn):
             "coaching_note TEXT NOT NULL DEFAULT ''"
         )
 
+    if "submission_token" not in columns:
+        conn.execute("ALTER TABLE entries ADD COLUMN submission_token TEXT")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_entries_submission_token ON entries(submission_token)")
+
     if "progress" not in columns:
         conn.execute(
             "ALTER TABLE entries ADD COLUMN "
