@@ -54,24 +54,11 @@ def ensure_entry_columns(conn):
             "ALTER TABLE entries ADD COLUMN due_date TEXT"
         )
 
-    if "due_time" not in columns:
-        conn.execute(
-            "ALTER TABLE entries ADD COLUMN due_time TEXT"
-        )
-
     if "priority" not in columns:
         conn.execute(
             "ALTER TABLE entries ADD COLUMN "
             "priority TEXT NOT NULL DEFAULT 'normal'"
         )
-
-    # Preserve optional deadlines for manual entries (#61).
-    if "due_date" not in columns:
-        conn.execute("ALTER TABLE entries ADD COLUMN due_date TEXT")
-    if "due_time" not in columns:
-        conn.execute("ALTER TABLE entries ADD COLUMN due_time TEXT")
-    if "priority" not in columns:
-        conn.execute("ALTER TABLE entries ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'")
 
     if "parent_confirmed" not in columns:
         conn.execute(
@@ -297,6 +284,37 @@ def db():
             )
             """
         )
+
+        # End-of-day packing and follow-up records; no staff authentication implied.
+        conn.execute("""CREATE TABLE IF NOT EXISTS checkout_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            day TEXT NOT NULL,
+            item_type TEXT NOT NULL CHECK(item_type IN ('book','paper','device','other')),
+            description TEXT NOT NULL,
+            ready INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(day,item_type,description)
+        )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS checkout_followups (
+            class_id INTEGER NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+            day TEXT NOT NULL,
+            resolution TEXT NOT NULL DEFAULT 'pending'
+                CHECK(resolution IN ('pending','resolved','exception')),
+            note TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY(class_id,day)
+        )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS checkout_corrections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            class_id INTEGER NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+            day TEXT NOT NULL,
+            previous_outcome TEXT,
+            new_outcome TEXT NOT NULL,
+            corrected_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )""")
+        conn.execute("""CREATE INDEX IF NOT EXISTS idx_checkout_corrections_class_day
+            ON checkout_corrections(class_id,day)""")
+        review_columns = {r['name'] for r in conn.execute('PRAGMA table_info(school_reviews)')}
+        if 'reviewed_by' not in review_columns:
+            conn.execute("ALTER TABLE school_reviews ADD COLUMN reviewed_by TEXT NOT NULL DEFAULT 'unspecified'")
 
         conn.execute(
             """

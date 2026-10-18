@@ -9,7 +9,7 @@ from synccanvas import database
 def create_demo(path: Path) -> Path:
     path = Path(path).expanduser().resolve()
     if path == database.DB_PATH.expanduser().resolve():
-        raise ValueError("Cannot use the configured application database")
+        raise ValueError("Cannot use the family database for demo data")
     if path.exists():
         raise FileExistsError(str(path))
     if not path.parent.is_dir():
@@ -22,12 +22,26 @@ def create_demo(path: Path) -> Path:
                 "INSERT INTO classes(name,sort_order) VALUES (?,?)",
                 [("Demo Math", 1), ("Demo Science", 2)],
             )
-            ids = {r["name"]: r["id"] for r in conn.execute("SELECT id,name FROM classes")}
+            ids = {
+                r["name"]: r["id"]
+                for r in conn.execute("SELECT id,name FROM classes")
+            }
             conn.executemany(
-                "INSERT INTO entries(class_id,kind,details,origin,progress) VALUES (?,?,?,'student',?)",
+                "INSERT INTO entries(class_id,kind,details,origin,progress) "
+                "VALUES (?,?,?,'student',?)",
                 [
-                    (ids["Demo Math"], "Homework", "Practice problems 1-5", "not_started"),
-                    (ids["Demo Science"], "Study", "Review sample vocabulary", "in_progress"),
+                    (
+                        ids["Demo Math"],
+                        "Homework",
+                        "Practice problems 1-5",
+                        "not_started",
+                    ),
+                    (
+                        ids["Demo Science"],
+                        "Study",
+                        "Review sample vocabulary",
+                        "in_progress",
+                    ),
                 ],
             )
     finally:
@@ -37,7 +51,11 @@ def create_demo(path: Path) -> Path:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, default=Path("synccanvas_demo.sqlite3"))
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path("synccanvas_demo.sqlite3"),
+    )
     args = parser.parse_args()
     try:
         print(create_demo(args.output))

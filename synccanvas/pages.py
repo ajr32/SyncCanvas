@@ -45,7 +45,15 @@ def layout(title, content):
     header nav{display:flex;flex-wrap:wrap;align-items:center;gap:10px 20px}
     header a{color:white}header a.parent-link{margin-left:auto}
     header nav a{padding:7px 9px;border-radius:7px;text-decoration:none}header nav a:hover,header nav a:focus-visible{background:#345b85;outline:2px solid white;outline-offset:2px}
-    main{max-width:940px;margin:28px auto;padding:0 18px}
+    main{max-width:940px;margin:28px auto;padding:0 18px;min-width:0}
+    .skip-link{position:absolute;left:12px;top:-100px;background:white;color:#193a63;padding:12px;z-index:100}
+    .skip-link:focus{top:8px}
+    .panel,.task-card,.canvas-card{min-width:0;overflow-wrap:anywhere}
+    input,select,textarea{max-width:100%}
+    .row>*,.canvas-meta>*{min-width:0}
+    @media(max-width:760px){header{padding:14px 18px}header nav{gap:6px 10px}main{margin:16px auto;padding:0 12px}.panel{padding:14px}}
+    @media(max-width:420px){header nav a{flex:1 1 auto;justify-content:center}header a.parent-link{margin-left:0}.task-card{padding:12px}input[type=text]{min-width:0;width:100%}}
+    @media(min-width:761px) and (max-width:1100px){main{padding:0 24px}}
     .panel{background:white;border:1px solid #dce4ee;border-radius:12px;padding:20px;margin:16px 0}
     .class{border-top:1px solid #e1e8f0;padding:14px 0}
     .task-group{display:grid;gap:12px}.task-card{border:1px solid #dce4ee;border-radius:10px;padding:16px;background:#fff}.task-card h4{margin:0 0 6px}.task-card p{margin:6px 0}.task-top{display:flex;justify-content:space-between;align-items:start;gap:12px;flex-wrap:wrap}.task-source{font-size:.82rem;font-weight:700;color:#52647b}.task-progress{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.task-progress select{min-width:145px}.muted{color:#52647b}.summary-grid{display:flex;gap:12px;flex-wrap:wrap}.summary-grid span{background:#edf3fb;border-radius:8px;padding:10px 14px}.canvas-card{border:1px solid #dce4ee;border-radius:10px;padding:12px 14px;margin:10px 0;background:white}
@@ -55,23 +63,32 @@ def layout(title, content):
     .due-overdue{color:#b42332!important;font-weight:750}
     .canvas-meta,.row{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;margin-top:6px;line-height:1.5}
     .canvas-open{display:inline-flex;align-items:center;min-height:44px;padding:8px 13px;border-radius:8px;background:#1659a2;color:white;font-weight:600;text-decoration:none}
-    input,select,button{font:inherit;padding:10px;border-radius:7px;border:1px solid #9baec4}
-    button{background:#1659a2;color:white;border:0;cursor:pointer}
+    input,select,textarea,button{font:inherit;padding:10px;border-radius:7px;border:1px solid #9baec4}
+    button{background:#1659a2;color:white;border:0;cursor:pointer;min-height:44px}
+    input,select,textarea{min-height:44px;box-sizing:border-box}
+    a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible{outline:3px solid #e19a20;outline-offset:3px}
+    button:disabled{opacity:.65;cursor:not-allowed}
+    summary{cursor:pointer;padding:10px 4px;min-height:44px;box-sizing:border-box;font-weight:600}
+    details[open]>summary{margin-bottom:12px}
+    @media(hover:hover){button:hover{filter:brightness(.92)}}
     button.secondary{background:#e5edf7;color:#193a63}button.danger{background:#9f2936}
     label{display:block;margin:8px 0 4px}form.inline{display:inline}
     small{color:#52647b}.done{text-decoration:line-through;color:#64748b}
     a{color:#1659a2}.status{font-weight:600}.unchecked{color:#a34d00}.checked{color:#147044}
-    input[type=text]{min-width:220px}@media(max-width:580px){input,select,button{max-width:100%}.row>*{flex:1 1 170px}}
+    input[type=text]{min-width:220px}
+    @media(max-width:580px){input,select,button{max-width:100%}.row>*{flex:1 1 170px}header nav a{min-height:44px;display:inline-flex;align-items:center}}
+    @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
     """
     return HTMLResponse(
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
         f'<title>{esc(title)} · SyncCanvas</title><style>{css}</style></head><body>'
-        '<header><h1>SyncCanvas</h1><nav><a href="/afternoon">My Afternoon</a>'
+        '<a class="skip-link" href="#main-content">Skip to main content</a>'
+        '<header><h1>SyncCanvas</h1><nav aria-label="Main navigation"><a href="/afternoon">My Afternoon</a>'
         '<a href="/add">Add Information</a><a href="/review">School Check-Out</a>'
         '<a class="parent-link" href="/parent">Parent Review</a>'
         '<a href="/settings">Settings</a></nav></header>'
-        f'<main><h2>{esc(title)}</h2>{content}'
+        f'<main id="main-content"><h2>{esc(title)}</h2>{content}'
         '<p><small>Local prototype only · No accounts or cloud sync yet · Do not publish online</small></p>'
         '</main></body></html>'
     )
@@ -79,12 +96,17 @@ def layout(title, content):
 def today():
     return family_today().isoformat()
 
+def labeled_input(label, name, *, input_type="text", value="", required=False):
+    """Reusable accessible labeled field; escape all dynamic HTML attributes."""
+    field_id = "field-" + "".join(c if c.isalnum() or c in "-_" else "-" for c in name)
+    return (f'<label for="{esc(field_id)}">{esc(label)}</label>'
+            f'<input id="{esc(field_id)}" type="{esc(input_type)}" name="{esc(name)}"'
+            f' value="{esc(value or "")}"{" required" if required else ""}>')
+
+
 def deadline_fields(due_date=""):
     """One optional due date for manually added tasks."""
-    return (
-        f'<label>Due date (optional)<input type="date" name="due_date" '
-        f'value="{esc(due_date or "")}"></label>'
-    )
+    return labeled_input("Due date (optional)", "due_date", input_type="date", value=due_date)
 
 
 def deadline_label(item):
@@ -300,13 +322,13 @@ def student():
             note=f'<p><small>Parent note: {esc(item["coaching_note"])}</small></p>' if item["coaching_note"] else ''
             parts.append(f'<div class="class"><span{status}><strong>{esc(item["kind"])}</strong> — '
                          f'{esc(item["details"])}</span> · {esc(state)}{deadline_html(item)}{note}</div>')
-        parts.append(f'''<form method="post" action="/classes/{cid}/entries">
+        parts.append(f'''<details class="class-entry"><summary>Add homework or a note</summary><form method="post" action="/classes/{cid}/entries">
             <label for="kind-{cid}">What needs to happen?</label><select id="kind-{cid}" name="kind">{options()}</select>
             <label for="details-{cid}">What exactly? (required)</label>
             <input type="text" id="details-{cid}" name="details" required maxlength="300" placeholder="e.g. Questions 1–10">
             {deadline_fields()}
             <input type="hidden" name="submission_token" value="{secrets.token_hex(32)}">
-            <button type="submit">Add task &amp; check in</button></form>
+            <button type="submit">Add task &amp; check in</button></form></details>
             <div class="row"><form class="inline" method="post" action="/classes/{cid}/nothing">
             <button class="secondary" type="submit">Nothing Tonight</button></form>
             <form class="inline" method="post" action="/classes/{cid}/checkin">
@@ -324,8 +346,8 @@ def quick_add():
     if not classes:
         parts.append('<p>No active classes. Ask a parent to set up classes in Settings.</p>')
     else:
-        parts.append('<form id="quick-entry" method="post">'
-                     '<label for="quick-class">Class</label><select id="quick-class" required>')
+        parts.append('<form id="quick-entry" method="post" action="/add">'
+                     '<label for="quick-class">Class</label><select id="quick-class" name="class_id" required>')
         parts.extend(f'<option value="{c["id"]}">{esc(c["name"])}</option>' for c in classes)
         parts.append('</select><label for="quick-kind">What kind of work?</label>'
                      '<select id="quick-kind" name="kind">'
@@ -339,83 +361,137 @@ def quick_add():
                      'placeholder="e.g. finish problems 4–8" autofocus>'
                      + deadline_fields()
                      + f'<input type="hidden" name="submission_token" value="{secrets.token_hex(32)}">'
-                     '<p><button type="submit">Save</button></p></form>'
-                     '<script>(function(){const form=document.getElementById("quick-entry");'
-                     'const field=document.getElementById("quick-class");'
-                     'function update(){form.action="/classes/"+field.value+"/entries";}'
-                     'field.addEventListener("change",update);update();})();</script>')
+                     '<p><button type="submit">Save</button></p></form>')
     parts.append('<p><a href="/">Detailed class check-in</a></p></section>')
     return layout("Add Information","".join(parts))
 
 
 @router.get("/review",response_class=HTMLResponse)
 def review():
+    """Quick end-of-day double-check of each class, not a second task list."""
     with db() as conn:
-        classes=get_active_classes(conn)
-        checked=checkins_today(conn)
-        entries=manual_entries(conn)
-        assignments=get_canvas_assignments(conn)
-        school_reviews={r["class_id"]:r["outcome"] for r in conn.execute(
-            "SELECT class_id,outcome FROM school_reviews WHERE day=?",(today(),))}
-        questions={r["class_id"]:r for r in conn.execute(
-            "SELECT class_id,question,resolved FROM class_questions WHERE day=?",(today(),))}
-        paper=conn.execute("SELECT * FROM paper_reviews WHERE day=?",(today(),)).fetchone()
-    by_class={}
+        classes = get_active_classes(conn)
+        entries = manual_entries(conn)
+        assignments = get_canvas_assignments(conn)
+        school_reviews = {r["class_id"]: r for r in conn.execute(
+            "SELECT class_id,outcome,reviewed_at FROM school_reviews WHERE day=?", (today(),))}
+        questions = {r["class_id"]: r for r in conn.execute(
+            "SELECT class_id,question,resolved FROM class_questions WHERE day=?", (today(),))}
+        corrections = {}
+        for change in conn.execute("""SELECT class_id,previous_outcome,new_outcome,corrected_at
+            FROM checkout_corrections WHERE day=? ORDER BY id DESC""", (today(),)):
+            corrections.setdefault(change["class_id"], []).append(change)
+        packing = conn.execute("SELECT * FROM checkout_items WHERE day=? ORDER BY id", (today(),)).fetchall()
+        paper = conn.execute("SELECT * FROM paper_reviews WHERE day=?", (today(),)).fetchone()
+
+    by_class = {}
     for entry in entries:
-        by_class.setdefault(entry["class_id"],[]).append(entry)
-    canvas_by_class={}
+        by_class.setdefault(entry["class_id"], []).append(entry)
+    canvas_by_class = {}
     for assignment in assignments:
         if not assignment["completed"]:
-            canvas_by_class.setdefault(assignment["class_id"],[]).append(assignment)
-    completed=sum(c["id"] in school_reviews for c in classes)
-    parts=['<section class="panel"><h3>School check-out</h3>',
-           f'<p><strong>{completed} of {len(classes)}</strong> classes reviewed today.</p>',
-           '<p>Check every class with the school aide. These are locally saved review records, '
-           'not authenticated staff signatures. Student check-ins are shown separately.</p></section>']
+            canvas_by_class.setdefault(assignment["class_id"], []).append(assignment)
+
+    completed = sum(cls["id"] in school_reviews for cls in classes)
+    parts = [
+        '<section class="panel"><h3>End-of-Day Check-Out</h3>',
+        '<p>Before you leave, look at each class. Did you write down everything '
+        'you need to do at home, and do you have what you need to bring home?</p>',
+        f'<p><strong>{completed} of {len(classes)}</strong> classes reviewed today.</p></section>',
+    ]
     for cls in classes:
-        cid=cls["id"]
-        outcome=school_reviews.get(cid)
-        status={'reviewed':'Reviewed','nothing':'Reviewed — nothing needed',
-                'needs_followup':'Reviewed — follow-up needed'}.get(outcome,'Not reviewed')
-        parts.append(f'<section class="panel"><h3 class="task-class">{esc(cls["name"])}</h3>'
-                     f'<p>School review: <strong>{esc(status)}</strong> · Student: '
-                     f'{esc(checkin_label(cid,checked))}</p>')
-        canvas=canvas_by_class.get(cid,[])
-        current=by_class.get(cid,[])
-        if canvas:
-            parts.append('<h4>Canvas context (read-only)</h4>')
-            parts.extend(canvas_assignment_html(a) for a in canvas)
+        cid = cls["id"]
+        record = school_reviews.get(cid)
+        is_reviewed = record is not None
+        parts.append(f'<section class="panel"><h3 class="task-class">{esc(cls["name"])}</h3>')
+        status = ({"reviewed": "Checked", "nothing": "Checked — nothing to do",
+                   "needs_followup": "Needs clarification"}.get(record["outcome"], "Unchecked")
+                  if record else "Unchecked")
+        parts.append(f'<p><strong>{esc(status)}</strong></p>')
+        if record:
+            parts.append(f'<p><small>Last checked: {esc(record["reviewed_at"])} UTC</small></p>')
+        if not is_reviewed:
+            parts.append(
+                f'<form method="post" action="/school/classes/{cid}/review">'
+                '<input type="hidden" name="outcome" value="reviewed">'
+                '<button type="submit">✓ I reviewed this class</button></form>'
+            )
+        else:
+            parts.append(
+                f'<form method="post" action="/school/classes/{cid}/review">'
+                '<input type="hidden" name="outcome" value="reviewed">'
+                '<button class="secondary" type="submit">Review again</button></form>'
+            )
+        parts.append(f'''<details><summary>Change checkout status</summary>
+            <form method="post" action="/school/classes/{cid}/review">
+            <label for="outcome-{cid}">Class status</label>
+            <select id="outcome-{cid}" name="outcome">
+            <option value="reviewed">Checked</option>
+            <option value="nothing">Nothing to do</option>
+            <option value="needs_followup">Needs clarification</option>
+            </select><button type="submit">Save status</button></form></details>''')
+        if corrections.get(cid):
+            parts.append('<details><summary>Earlier corrections</summary><ul>')
+            for change in corrections[cid]:
+                parts.append(f'<li>{esc(change["previous_outcome"])} → '
+                             f'{esc(change["new_outcome"])} · '
+                             f'{esc(change["corrected_at"])} UTC</li>')
+            parts.append('</ul></details>')
+        current = by_class.get(cid, [])
+        canvas = canvas_by_class.get(cid, [])
         if current:
-            parts.append('<h4>Student and parent notes</h4><ul>')
-            parts.extend(f'<li>{esc(e["kind"])} — {esc(e["details"])}' + (f' · {esc(deadline_label(e))}' if deadline_label(e) else '') + '</li>' for e in current)
+            parts.append('<p>What you wrote down:</p><ul>')
+            parts.extend(
+                f'<li>{esc(entry["kind"])} — {esc(entry["details"])}'
+                + (f' · {esc(deadline_label(entry))}' if deadline_label(entry) else '')
+                + '</li>' for entry in current
+            )
             parts.append('</ul>')
-        if not canvas and not current:
-            parts.append('<p>No work recorded. Ask about this class before confirming.</p>')
-        parts.append('<p><a href="/add">+ Add missing information</a></p>'
-                     f'<form method="post" action="/school/classes/{cid}/review">'
-                     '<label>Review result</label><select name="outcome">'
-                     '<option value="reviewed">Reviewed — work checked</option>'
-                     '<option value="nothing">Reviewed — nothing needed</option>'
-                     '<option value="needs_followup">Reviewed — needs follow-up</option>'
-                     '</select> <button type="submit">Save class review</button></form>')
-        question=questions.get(cid)
-        parts.append(f'<form method="post" action="/school/classes/{cid}/question">'
-                     '<label>Missing or unclear information (optional)</label>'
-                     f'<input type="text" name="question" maxlength="300" value="{esc(question["question"] if question else "")}" '
-                     'placeholder="e.g. Ask whether worksheet is homework">'
-                     f'<label><input type="checkbox" name="resolved" value="yes" {"checked" if question and question["resolved"] else ""}> Resolved</label>'
-                     '<button class="secondary" type="submit">Save question</button></form></section>')
-    parts.append('<section class="panel"><h3>Physical papers</h3>'
-                 '<p>Check the accordion pocket at the front of the binder and look in the backpack '
-                 'for loose papers. No need to inventory every worksheet.</p>'
-                 '<form method="post" action="/school/papers">'
-                 f'<label><input type="checkbox" name="pocket_checked" value="yes" {"checked" if paper and paper["pocket_checked"] else ""}> Accordion pocket checked</label>'
-                 f'<label><input type="checkbox" name="backpack_checked" value="yes" {"checked" if paper and paper["backpack_checked"] else ""}> Backpack checked</label>'
-                 '<label>Paper note (optional)</label>'
-                 f'<input type="text" name="notes" maxlength="300" value="{esc(paper["notes"] if paper else "")}">'
-                 '<p><button type="submit">Save paper check</button></p></form>'
-                 '<p><small>Saved locally without staff identity verification.</small></p></section>')
-    return layout("School Check-Out","".join(parts))
+        elif not canvas:
+            parts.append('<p>No work recorded for this class. Is that right?</p>')
+        if canvas:
+            parts.append('<p>Canvas assignments to double-check:</p>')
+            parts.extend(canvas_assignment_html(a) for a in canvas)
+        parts.append(
+            '<p>Forgot to write something down? '
+            '<a href="/add">Add it to your class notes</a>.</p>'
+        )
+        question = questions.get(cid)
+        if question and question["question"]:
+            parts.append(f'<p><strong>Reminder:</strong> {esc(question["question"])}'
+                         + (' (resolved)' if question["resolved"] else '') + '</p>')
+        parts.append(
+            f'<form method="post" action="/school/classes/{cid}/question">'
+            '<label>Anything missing or unclear? (optional)</label>'
+            f'<input type="text" name="question" maxlength="300" value="{esc(question["question"] if question else "")}" '
+            'placeholder="e.g. Need to bring math workbook home">'
+            '<button class="secondary" type="submit">Save note</button></form>'
+        )
+        parts.append('</section>')
+
+    parts.append('<section class="panel"><h3>What must go home?</h3>'
+                 '<p>Add books, papers, or devices you need tonight. Mark each one packed.</p>')
+    for item in packing:
+        parts.append(f'<p>{esc(item["description"])} ({esc(item["item_type"])}) — '
+                     + ('Packed' if item['ready'] else 'Not packed') + '</p>')
+        parts.append(f'<form class="inline" method="post" action="/school/packing/{item["id"]}/ready">'
+                     f'<input type="hidden" name="ready" value="{ "" if item["ready"] else "yes" }">'
+                     f'<button class="secondary" type="submit">{ "Undo packed" if item["ready"] else "Packed" }</button></form>')
+    parts.append('''<details><summary>Add something to bring home</summary>
+        <form method="post" action="/school/packing/add">
+        <label>Type</label><select name="item_type">
+        <option value="book">Book</option><option value="paper">Paper</option>
+        <option value="device">Device</option><option value="other">Other</option></select>
+        <label>What do you need?</label><input name="description" maxlength="120" required>
+        <button type="submit">Add to packing list</button></form></details></section>''')
+    # Older paper-check notes remain visible, without requiring a second checklist.
+    if paper and paper["notes"]:
+        parts.append('<section class="panel"><h3>Earlier paper note</h3>'
+                     f'<p>{esc(paper["notes"])}</p></section>')
+    if classes and completed == len(classes):
+        parts.append('<section class="panel"><p><strong>All classes reviewed.</strong> '
+                     'Check your bag and you are ready to head home.</p></section>')
+    return layout("School Check-Out", "".join(parts))
 
 @router.get("/afternoon",response_class=HTMLResponse)
 @router.get("/home",response_class=HTMLResponse)

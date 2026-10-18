@@ -2,11 +2,13 @@
 from __future__ import annotations
 from dataclasses import asdict
 import sqlite3
-from fastapi import FastAPI, Form, HTTPException
-from fastapi.responses import RedirectResponse
+from fastapi import FastAPI, Form, HTTPException, Request
+from fastapi.responses import RedirectResponse, JSONResponse
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from synccanvas.canvas_settings import get_canvas_settings
 from synccanvas.database import db
-from synccanvas.pages import router as pages_router, today
+from synccanvas.pages import router as pages_router, today, layout, esc
 from synccanvas.parent_classes import router as parent_classes_router
 from synccanvas.services.background_sync import background_sync
 from synccanvas.services.canvas_http import CanvasHTTP
@@ -17,6 +19,36 @@ from synccanvas.services.tasks import TaskInput, validate_task, validate_task_de
 from synccanvas.parent_schedule import router as parent_schedule_router
 
 app = FastAPI(title="SyncCanvas (local prototype)")
+
+
+def _wants_html(request: Request) -> bool:
+    accept = request.headers.get("accept", "")
+    return "text/html" in accept and "application/json" not in accept
+
+
+@app.exception_handler(StarletteHTTPException)
+async def user_friendly_http_error(request: Request, exc: HTTPException):
+    if not _wants_html(request):
+        return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+    title = "Page not found" if exc.status_code == 404 else "Something needs attention"
+    content = (f'<section class="panel" role="alert"><p>{esc(exc.detail)}</p>'
+               '<p><a href="/">Return to student home</a> · '
+               '<a href="/review">School Check-Out</a></p></section>')
+    response = layout(title, content)
+    response.status_code = exc.status_code
+    return response
+
+
+@app.exception_handler(RequestValidationError)
+async def user_friendly_validation_error(request: Request, exc: RequestValidationError):
+    if not _wants_html(request):
+        return JSONResponse({"detail": exc.errors()}, status_code=422)
+    response = layout("Check your information", '<section class="panel" role="alert">'
+                      '<p>Some information is missing or invalid. Go back and check the form.</p>'
+                      '<p><a href="/">Return to student home</a></p></section>')
+    response.status_code = 422
+    return response
+
 
 def configure_canvas_sync(settings=None) -> bool:
     if settings is None:
@@ -57,15 +89,70 @@ def add_class(name: str = Form(...)):
     return go()
 
 @app.post("/school/classes/{class_id}/review")
-def school_review_class(class_id: int, outcome: str = Form(...)):
+def school_review_class(class_id: int, outcome: str = Form(...), reviewed_by: str = Form("student")):
     if outcome not in ("reviewed", "nothing", "needs_followup"):
         raise HTTPException(422, "Invalid class review outcome")
+    if reviewed_by not in ("student", "parent", "school_staff", "unspecified"):
+        raise HTTPException(422, "Invalid reviewer")
     with db() as conn:
         require_class(conn, class_id)
-        conn.execute("""INSERT INTO school_reviews(class_id,day,outcome)
-            VALUES(?,?,?) ON CONFLICT(class_id,day) DO UPDATE SET
-            outcome=excluded.outcome,reviewed_at=CURRENT_TIMESTAMP""",(class_id,today(),outcome))
+        previous = conn.execute("SELECT outcome FROM school_reviews WHERE class_id=? AND day=?",
+                                (class_id, today())).fetchone()
+        conn.execute("""INSERT INTO school_reviews(class_id,day,outcome,reviewed_by)
+            VALUES(?,?,?,?) ON CONFLICT(class_id,day) DO UPDATE SET
+            outcome=excluded.outcome,reviewed_by=excluded.reviewed_by,reviewed_at=CURRENT_TIMESTAMP""",(class_id,today(),outcome,reviewed_by))
+        if previous is not None and previous["outcome"] != outcome:
+            conn.execute("""INSERT INTO checkout_corrections(class_id,day,previous_outcome,new_outcome)
+                VALUES(?,?,?,?)""", (class_id,today(),previous["outcome"],outcome))
     return go("/review")
+
+@app.post("/school/classes/{class_id}/followup")
+def school_followup(class_id: int, resolution: str = Form(...), note: str = Form("")):
+    if resolution not in ("pending", "resolved", "exception"):
+        raise HTTPException(422, "Invalid follow-up resolution")
+    note = note.strip()
+    if len(note) > 300:
+        raise HTTPException(422, "Follow-up note must be at most 300 characters")
+    if resolution == "exception" and not note:
+        raise HTTPException(422, "Document the exception")
+    with db() as conn:
+        require_class(conn, class_id)
+        conn.execute("""INSERT INTO checkout_followups(class_id,day,resolution,note)
+            VALUES(?,?,?,?) ON CONFLICT(class_id,day) DO UPDATE SET
+            resolution=excluded.resolution,note=excluded.note""",
+            (class_id,today(),resolution,note))
+    return go("/review")
+
+
+@app.post("/school/packing/add")
+def add_packing_item(item_type: str = Form(...), description: str = Form(...)):
+    description = description.strip()
+    if item_type not in ("book", "paper", "device", "other") or not 1 <= len(description) <= 120:
+        raise HTTPException(422, "Choose a type and description (1-120 characters)")
+    with db() as conn:
+        conn.execute("""INSERT OR IGNORE INTO checkout_items(day,item_type,description)
+            VALUES(?,?,?)""", (today(),item_type,description))
+    return go("/review")
+
+
+@app.post("/school/packing/{item_id}/ready")
+def mark_packing_item(item_id: int, ready: str = Form("")):
+    with db() as conn:
+        result = conn.execute("UPDATE checkout_items SET ready=? WHERE id=? AND day=?",
+                              (int(ready == "yes"),item_id,today()))
+        if not result.rowcount:
+            raise HTTPException(404, "Packing item not found for today")
+    return go("/review")
+
+
+@app.post("/school/packing/{item_id}/delete")
+def remove_packing_item(item_id: int):
+    with db() as conn:
+        result = conn.execute("DELETE FROM checkout_items WHERE id=? AND day=?", (item_id,today()))
+        if not result.rowcount:
+            raise HTTPException(404, "Packing item not found for today")
+    return go("/review")
+
 
 @app.post("/school/papers")
 def school_review_papers(pocket_checked: str = Form(""), backpack_checked: str = Form(""), notes: str = Form("")):
@@ -91,6 +178,18 @@ def school_class_question(class_id: int, question: str = Form(""), resolved: str
             question=excluded.question,resolved=excluded.resolved,updated_at=CURRENT_TIMESTAMP""",
             (class_id,today(),question,int(resolved=="yes")))
     return go("/review")
+
+@app.post("/add")
+def add_entry_from_quick_form(
+    class_id: int = Form(...),
+    kind: str = Form(...),
+    details: str = Form(...),
+    submission_token: str = Form(""),
+    due_date: str = Form(""),
+):
+    """Handle Add Information with a normal HTML form; no JavaScript needed."""
+    return add_entry(class_id, kind, details, submission_token, due_date)
+
 
 @app.post("/classes/{class_id}/entries")
 def add_entry(class_id: int, kind: str = Form(...), details: str = Form(...), submission_token: str = Form(""), due_date: str = Form("")):

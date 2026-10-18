@@ -1,0 +1,10 @@
+Issue #90 verification
+
+Copy synccanvas/tests/test_issue90_class_entry_status.py into the existing project.
+Run: python -m pytest -q
+
+Verified in assembled project: 233 passed.
+
+Checks: missing class check-ins visible to student and parent; checked-but-undecided distinct from Nothing Tonight; explicit Nothing Tonight; task submission marks check-in; nonexistent class rejected; disabled and archived classes excluded.
+
+No application code changes or user-guide updates required. GitHub unchanged.

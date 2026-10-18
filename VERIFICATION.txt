@@ -1,0 +1,19 @@
+SyncCanvas student UX batch: issues #79, #80, #108
+
+Replace synccanvas/pages.py with the bundled complete file.
+Add synccanvas/tests/test_student_ux_79_80_108.py.
+
+Run in your full local SyncCanvas checkout:
+    python -m pytest -q
+
+Changes:
+- 44px minimum input, select and button height, including mobile navigation links
+- Visible keyboard focus on links, buttons, fields, and expandable summaries
+- Reduced-motion support
+- Native details/summary hides optional per-class typing fields until needed
+- No-typing 'Nothing Tonight' and 'Checked — still deciding' actions remain visible
+
+Important: The isolated files available here do not include the full SyncCanvas
+package, so the pytest run here could not import synccanvas.services. The
+application's full test suite must be run in your checkout before closing issues.
+GitHub issues have not been modified.
