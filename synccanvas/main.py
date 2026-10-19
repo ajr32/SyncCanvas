@@ -8,7 +8,7 @@ from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from synccanvas.canvas_settings import get_canvas_settings
+from synccanvas.canvas_settings import get_canvas_settings, CanvasSettings, SettingsError
 from synccanvas.database import db
 from synccanvas.pages import router as pages_router, today, layout, esc
 from synccanvas.parent_classes import router as parent_classes_router
@@ -87,11 +87,12 @@ def configure_canvas_sync(settings=None) -> bool:
     else:
         url = settings.get("SYNCCANVAS_CANVAS_URL", "").strip()
         token = settings.get("SYNCCANVAS_CANVAS_TOKEN", "").strip()
-    if not url or not token:
-        return False
     try:
-        client = CanvasHTTP(base_url=url, token=token)
-    except ValueError:
+        validated = CanvasSettings(url=url, token=token)
+        if not validated.url:
+            return False
+        client = CanvasHTTP(base_url=validated.url, token=validated.token)
+    except (ValueError, SettingsError):
         return False
     background_sync.configure(CanvasImportWorker(fetch_assignments=client.assignments_for_course))
     return True
