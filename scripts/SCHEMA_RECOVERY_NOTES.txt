@@ -1,0 +1,26 @@
+SyncCanvas schema upgrades (#21/#22)
+===================================
+The live database is SQLite, not Firestore. The current database.db()
+function creates missing tables and adds missing columns in place.
+This is an incremental, additive migration approach; do not delete
+columns or rebuild tables without a separate tested migration.
+
+Before installing a version that changes the database:
+1. Stop SyncCanvas if you are about to restore or swap a database.
+2. Create and verify a backup using scripts/sqlite_backup.py backup.
+3. Run python -m pytest -q (including test_sqlite_schema_21_22.py).
+4. Start SyncCanvas and check student and parent views.
+5. If data is damaged, stop SyncCanvas, restore a verified backup to
+   a NEW filename, then deliberately swap databases while stopped.
+
+The tests check creation, index presence, preservation of old tasks,
+repeatability, and foreign-key enforcement. They do not claim that
+every possible historic database version is covered.
+
+Performance (#39)
+=================
+With SyncCanvas running locally, run:
+    python scripts/measure_pages.py
+Default warning budgets: 2,000 ms per GET, 500 KiB HTML per page.
+These are practical starting thresholds, not measured baselines.
+Review any warnings before changing caching or pagination.
