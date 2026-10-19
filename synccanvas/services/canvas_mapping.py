@@ -25,6 +25,8 @@ class MappedAssignment:
     html_url: str | None
     source: str = "canvas"
     submission_types: tuple[str, ...] = ()
+    canvas_submitted: bool = False
+    canvas_missing: bool = False
 
 def _id(value: Any) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
@@ -66,6 +68,8 @@ def map_assignment(assignment: CanvasAssignment) -> MappedAssignment:
         title=assignment.title, description=assignment.description,
         due_at=assignment.due_at, due_date=_due_date(assignment.due_at),
         html_url=assignment.html_url, submission_types=assignment.submission_types,
+        canvas_submitted=assignment.canvas_submitted,
+        canvas_missing=assignment.canvas_missing,
     )
 
 def map_assignments(raw_assignments: list[dict], course_id: int) -> list[MappedAssignment]:

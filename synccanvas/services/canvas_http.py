@@ -7,6 +7,8 @@ Uses GET requests only. Never imports or changes legacy CanvasSync.
 from __future__ import annotations
 
 import json
+import logging
+import time
 from collections.abc import Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlsplit
@@ -23,6 +25,9 @@ class CanvasHTTP:
         opener: Callable | None = None,
         timeout: float = 15.0,
         max_pages: int = 20,
+        max_retries: int = 2,
+        retry_delay: float = 0.2,
+        sleeper: Callable | None = None,
     ):
         base_url = base_url.strip().rstrip("/")
         parsed = urlsplit(base_url)
@@ -41,7 +46,7 @@ class CanvasHTTP:
         if not isinstance(token, str) or not token.strip():
             raise ValueError("Canvas token is required.")
 
-        if timeout <= 0 or max_pages < 1:
+        if timeout <= 0 or max_pages < 1 or max_retries < 0 or retry_delay < 0:
             raise ValueError("Invalid Canvas request limits.")
 
         self.base_url = base_url
@@ -49,6 +54,9 @@ class CanvasHTTP:
         self._opener = opener or urlopen
         self.timeout = timeout
         self.max_pages = max_pages
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
+        self._sleep = sleeper or time.sleep
 
     def _validate_url(self, url: str) -> None:
         parsed = urlsplit(url)
@@ -116,32 +124,31 @@ class CanvasHTTP:
                 method="GET",
             )
 
-            try:
-                with self._opener(
-                    request,
-                    timeout=self.timeout,
-                ) as response:
-                    payload = json.load(response)
-                    following = self._next_page(
-                        response.headers,
-                        next_url,
-                    )
-            except HTTPError as exc:
-                if exc.code in (401, 403):
-                    raise CanvasReadError(
-                        "Canvas access was denied. Check the connection."
-                    ) from None
-                if exc.code == 429:
-                    raise CanvasReadError(
-                        "Canvas is limiting requests. Try again later."
-                    ) from None
-                raise CanvasReadError(
-                    "Canvas could not complete the request."
-                ) from None
-            except (URLError, OSError, TimeoutError, ValueError, TypeError):
-                raise CanvasReadError(
-                    "Canvas could not be reached or returned invalid data."
-                ) from None
+            # Retry only read-only GET requests and transient failures.
+            for attempt in range(self.max_retries + 1):
+                try:
+                    with self._opener(request, timeout=self.timeout) as response:
+                        payload = json.load(response)
+                        following = self._next_page(response.headers, next_url)
+                    break
+                except HTTPError as exc:
+                    if exc.code in (401, 403):
+                        raise CanvasReadError("Canvas access was denied. Check the connection.") from None
+                    if exc.code not in (408, 429, 500, 502, 503, 504):
+                        raise CanvasReadError("Canvas could not complete the request.") from None
+                    if attempt == self.max_retries:
+                        message = ("Canvas is limiting requests. Try again later."
+                                   if exc.code == 429 else "Canvas could not complete the request; temporarily unavailable. Try again later.")
+                        raise CanvasReadError(message) from None
+                except (URLError, OSError, TimeoutError):
+                    if attempt == self.max_retries:
+                        raise CanvasReadError("Canvas could not be reached. Your saved tasks are still available.") from None
+                except (ValueError, TypeError):
+                    raise CanvasReadError("Canvas returned invalid data. Your saved tasks are still available.") from None
+                logging.getLogger("synccanvas.reliability").warning(
+                    "canvas_retry attempt=%d max_attempts=%d", attempt + 2, self.max_retries + 1
+                )
+                self._sleep(self.retry_delay * (2 ** attempt))
 
             if not isinstance(payload, list):
                 raise CanvasReadError(
@@ -173,5 +180,5 @@ class CanvasHTTP:
             raise CanvasReadError("Invalid Canvas course ID.")
 
         return self.get_list(
-            f"/api/v1/courses/{course_id}/assignments?per_page=100"
+            f"/api/v1/courses/{course_id}/assignments?per_page=100&include[]=submission"
         )

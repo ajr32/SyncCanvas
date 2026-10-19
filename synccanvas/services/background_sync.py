@@ -9,6 +9,7 @@ Status is stored in memory only. It resets when the application restarts.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from threading import Lock, Thread
 from typing import Protocol
@@ -112,6 +113,7 @@ class BackgroundSync:
         try:
             worker()
         except Exception:
+            logging.getLogger("synccanvas.reliability").error("sync_failed")
             # Do not expose tokens, credentials, or exception
             # details through student/parent status messages.
             result = SyncResult(
@@ -124,6 +126,7 @@ class BackgroundSync:
                 finished_at=timestamp(),
             )
         else:
+            logging.getLogger("synccanvas.reliability").info("sync_succeeded")
             result = SyncResult(
                 state=SyncState.SUCCESS,
                 message="Synchronization completed.",

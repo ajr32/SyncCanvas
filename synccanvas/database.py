@@ -54,6 +54,11 @@ def ensure_entry_columns(conn):
             "ALTER TABLE entries ADD COLUMN due_date TEXT"
         )
 
+    if "due_time" not in columns:
+        conn.execute(
+            "ALTER TABLE entries ADD COLUMN due_time TEXT"
+        )
+
     if "priority" not in columns:
         conn.execute(
             "ALTER TABLE entries ADD COLUMN "
@@ -215,6 +220,21 @@ def db():
             """
         )
 
+        # Persistent per-class materials, independent of today's packing status.
+        conn.execute("""CREATE TABLE IF NOT EXISTS class_materials (
+            id INTEGER PRIMARY KEY,
+            class_id INTEGER NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+            description TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(class_id, description)
+        )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS material_packing (
+            material_id INTEGER NOT NULL REFERENCES class_materials(id) ON DELETE CASCADE,
+            day TEXT NOT NULL,
+            packed INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(material_id, day)
+        )""")
+
         ensure_entry_columns(conn)
 
         conn.execute(
@@ -363,6 +383,23 @@ def db():
                 "PRAGMA table_info(canvas_assignments)"
             )
         }
+        if "last_seen_at" not in columns:
+            conn.execute("ALTER TABLE canvas_assignments ADD COLUMN last_seen_at TEXT")
+        if "missing_from_canvas" not in columns:
+            conn.execute("ALTER TABLE canvas_assignments ADD COLUMN missing_from_canvas INTEGER NOT NULL DEFAULT 0")
+        conn.execute("""CREATE TABLE IF NOT EXISTS canvas_sync_audit (
+            id INTEGER PRIMARY KEY CHECK (id=1),
+            last_success_at TEXT NOT NULL
+        )""")
+        if "family_category" not in columns:
+            conn.execute("ALTER TABLE canvas_assignments ADD COLUMN family_category TEXT NOT NULL DEFAULT 'auto'")
+
+        if "canvas_missing" not in columns:
+            conn.execute("ALTER TABLE canvas_assignments ADD COLUMN canvas_missing INTEGER NOT NULL DEFAULT 0")
+        if "canvas_submitted" not in columns:
+            conn.execute("ALTER TABLE canvas_assignments ADD COLUMN canvas_submitted INTEGER NOT NULL DEFAULT 0")
+        if "review_dismissed" not in columns:
+            conn.execute("ALTER TABLE canvas_assignments ADD COLUMN review_dismissed INTEGER NOT NULL DEFAULT 0")
 
         if "submission_types" not in columns:
             conn.execute(

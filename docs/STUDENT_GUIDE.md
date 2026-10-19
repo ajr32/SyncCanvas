@@ -19,3 +19,11 @@ After pressing a save or submit button, wait for the page to finish responding b
 
 ## If something looks wrong
 If a class, time, assignment, or school-day message seems incorrect, tell your parent. SyncCanvas is a developing family planner; school information may be incomplete or need review.
+
+## Materials for each class
+
+In **School Check-Out**, expand **Materials for this class** under the class. Add materials you regularly need, such as a notebook or workbook. Choose **Mark packed** when an item is in your bag; choose **Undo packed** if you need to check again. Packing status is for today only, but the materials list stays available on future days. Use **Remove** when you no longer need an item. The separate **What must go home?** list is for one-time items.
+
+### Canvas submissions
+
+Use **Check for updates** to refresh Canvas assignments. Work Canvas reports as submitted is automatically counted complete in SyncCanvas, even if the teacher has not graded it. You can click an assignment title to open its original Canvas page in a new tab. Paper work and added tasks can still be tracked separately.

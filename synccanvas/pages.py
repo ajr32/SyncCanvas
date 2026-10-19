@@ -57,7 +57,7 @@ def layout(title, content):
     .panel{background:white;border:1px solid #dce4ee;border-radius:12px;padding:20px;margin:16px 0}
     .class{border-top:1px solid #e1e8f0;padding:14px 0}
     .task-group{display:grid;gap:12px}.task-card{border:1px solid #dce4ee;border-radius:10px;padding:16px;background:#fff}.task-card h4{margin:0 0 6px}.task-card p{margin:6px 0}.task-top{display:flex;justify-content:space-between;align-items:start;gap:12px;flex-wrap:wrap}.task-source{font-size:.82rem;font-weight:700;color:#52647b}.task-progress{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.task-progress select{min-width:145px}.muted{color:#52647b}.summary-grid{display:flex;gap:12px;flex-wrap:wrap}.summary-grid span{background:#edf3fb;border-radius:8px;padding:10px 14px}.canvas-card{border:1px solid #dce4ee;border-radius:10px;padding:12px 14px;margin:10px 0;background:white}
-    .linked-work{border-top:1px solid #dce4ee;margin-top:14px;padding-top:12px}.linked-work h5{font-size:1rem;margin:0 0 6px}.linked-child{background:#f7faff;margin:10px 0 0 16px;border-left:4px solid #7598c7}.linked-child .task-class{font-size:1rem}
+    .category-tag{display:inline-block;border-radius:6px;background:#eaf1fa;color:#193a63;padding:3px 8px;font-size:.8rem;font-weight:650}.category-form{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0}.category-form label{margin:0}.category-form select{min-width:140px}.compact-canvas{padding:10px;border-top:1px solid #e1e8f0}.compact-canvas p{margin:4px 0}.linked-work{border-top:1px solid #dce4ee;margin-top:14px;padding-top:12px}.linked-work h5{font-size:1rem;margin:0 0 6px}.linked-child{background:#f7faff;margin:10px 0 0 16px;border-left:4px solid #7598c7}.linked-child .task-class{font-size:1rem}
     .task-class{display:block;font-size:1.18rem;font-weight:750;line-height:1.35;color:#193a63;margin-bottom:3px}
     .task-origin{display:block;font-size:.76rem;font-weight:500;letter-spacing:.03em;color:#64748b;margin-bottom:7px}
     .due-overdue{color:#b42332!important;font-weight:750}
@@ -92,6 +92,48 @@ def layout(title, content):
         '<p><small>Local prototype only · No accounts or cloud sync yet · Do not publish online</small></p>'
         '</main></body></html>'
     )
+
+def sync_controls(return_to: str, *, heading: str = "Canvas updates") -> str:
+    """A shared read-only status and manual sync action for family pages."""
+    status = present_sync_status(sync_coordinator.status())
+    raw = sync_coordinator.status()
+    with db() as conn:
+        try:
+            last_saved = conn.execute("SELECT last_success_at FROM canvas_sync_audit WHERE id=1").fetchone()
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc):
+                raise
+            last_saved = None
+    pieces = [f'<section class="panel"><h3>{esc(heading)}</h3>',
+              (f'<p><small>Last successful Canvas import: {esc(last_saved[0])} UTC. '
+               'Information may be out of date until the next successful update.</small></p>'
+               if last_saved else '<p><small>No successful Canvas import recorded yet. Canvas information may be incomplete.</small></p>'),
+              f'<p><strong>{esc(status.label)}</strong> — {esc(status.message)}</p>']
+    if raw.finished_at and raw.state == SyncState.SUCCESS:
+        try:
+            from datetime import timezone
+            stamp = datetime.fromisoformat(raw.finished_at).astimezone().strftime('%m/%d/%Y %I:%M %p')
+        except (ValueError, TypeError):
+            stamp = str(raw.finished_at)
+        pieces.append(f'<p><small>Last successful update: {esc(stamp)}</small></p>')
+    elif raw.finished_at and raw.state == SyncState.ERROR:
+        pieces.append('<p role="alert"><small>Canvas is temporarily unavailable. Your saved tasks remain available. Try checking for updates again later.</small></p>')
+    if status.state not in (SyncState.NOT_CONFIGURED.value, SyncState.RUNNING.value):
+        pieces.append('<form method="post" action="/sync/run">'
+                      f'<input type="hidden" name="return_to" value="{esc(return_to)}">'
+                      '<button type="submit">Check for updates</button></form>')
+    if status.state == SyncState.NOT_CONFIGURED.value:
+        pieces.append('<p><small>Canvas synchronization is not configured.</small></p>')
+    if status.state == SyncState.RUNNING.value:
+        pieces.append("""<p><small>Checking Canvas now. This page will refresh when finished.</small></p>
+            <script>(function(){let failures=0;async function checkSync(){try{
+            const response=await fetch('/api/sync/status',{cache:'no-store',headers:{'Accept':'application/json'}});
+            if(!response.ok)throw Error('Status unavailable');const status=await response.json();failures=0;
+            if(status.state!=='running'){window.location.reload();return;}
+            }catch(error){failures++;if(failures>=5){window.location.reload();return;}}
+            window.setTimeout(checkSync,1500);}window.setTimeout(checkSync,1500);}());</script>""")
+    pieces.append('</section>')
+    return ''.join(pieces)
 
 def today():
     return family_today().isoformat()
@@ -157,17 +199,72 @@ def get_active_classes(conn):
         return conn.execute("SELECT id,name,NULL AS period_label,NULL AS period_start FROM classes WHERE enabled=1 AND archived=0 ORDER BY sort_order,id").fetchall()
 
 def get_canvas_assignments(conn):
-    return conn.execute("""SELECT a.id,a.title,a.due_date,a.due_at,a.html_url,
-        a.submission_types,a.completed,c.id AS class_id,c.name AS class_name,c.sort_order
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(canvas_assignments)")}
+    submitted = "a.canvas_submitted" if "canvas_submitted" in cols else "0"
+    canvas_missing = "a.canvas_missing" if "canvas_missing" in cols else "0"
+    reviewed = "a.review_dismissed" if "review_dismissed" in cols else "0"
+    category = "a.family_category" if "family_category" in cols else "'auto'"
+    missing = "a.missing_from_canvas" if "missing_from_canvas" in cols else "0"
+    last_seen = "a.last_seen_at" if "last_seen_at" in cols else "NULL"
+    return conn.execute(f"""SELECT a.id,a.title,a.due_date,a.due_at,a.html_url,
+        a.submission_types,a.completed,{missing} AS missing_from_canvas,{last_seen} AS last_seen_at,{category} AS family_category,{submitted} AS canvas_submitted,{canvas_missing} AS canvas_missing,{reviewed} AS review_dismissed,c.id AS class_id,c.name AS class_name,c.sort_order
         FROM canvas_assignments a JOIN canvas_course_links l ON l.canvas_course_id=a.canvas_course_id
         JOIN classes c ON c.id=l.class_id WHERE c.enabled=1 AND c.archived=0
         ORDER BY CASE WHEN a.due_date IS NULL OR a.due_date='' THEN 1 ELSE 0 END,
         a.due_date,a.due_at,a.title,a.id""").fetchall()
 
+CANVAS_CATEGORIES = {"action": "Action needed", "assessment": "Assessment", "review": "Review / reference", "class": "In class", "unsorted": "Unsorted"}
+
+def canvas_category(assignment):
+    """Conservative suggestions, not assertions about teacher intent."""
+    override = assignment["family_category"]
+    if override in CANVAS_CATEGORIES:
+        return override
+    title = str(assignment["title"] or "").casefold()
+    if any(term in title for term in ("answer key", "study guide", "reference", "review sheet")):
+        return "review"
+    if any(term in title for term in ("warmup", "warm-up", "exit ticket", "bellringer", "bell ringer")):
+        return "class"
+    if any(term in title for term in ("quiz", "test", "exam")):
+        return "assessment"
+    # A due date alone is not proof of homework. Submission requirements can
+    # suggest an action, but an unsubmitted Canvas item still needs confirmation.
+    try:
+        types = json.loads(assignment["submission_types"] or "[]")
+    except (TypeError, ValueError):
+        types = []
+    if any(t in types for t in ("online_upload", "online_text_entry", "online_url", "student_annotation")):
+        return "action"
+    return "unsorted"
+
+def actionable_canvas(assignment):
+    return canvas_category(assignment) == "action"
+
+def canvas_category_tag(assignment):
+    category = canvas_category(assignment)
+    return f'<span class="category-tag">{esc(CANVAS_CATEGORIES[category])}</span>'
+
+def canvas_category_editor(assignment):
+    value = assignment["family_category"]
+    opts = ['<option value="auto"' + (' selected' if value == 'auto' else '') + '>Suggested</option>']
+    opts += [f'<option value="{key}"' + (' selected' if value == key else '') + f'>{esc(label)}</option>'
+             for key,label in CANVAS_CATEGORIES.items()]
+    return (f'<form class="category-form" method="post" action="/parent/canvas/{assignment["id"]}/category">'
+            f'<label for="category-{assignment["id"]}">Parent classification</label>'
+            f'<select id="category-{assignment["id"]}" name="category">{"".join(opts)}</select>'
+            '<button class="secondary" type="submit">Save</button></form>')
+
+def canvas_presence_label(assignment):
+    if assignment["canvas_missing"]:
+        return '<p class="muted" role="status">Canvas reports this submission as missing. Check Canvas for details.</p>'
+    if assignment["missing_from_canvas"]:
+        return '<p class="muted" role="status">Not found in the latest successful Canvas update. Saved family work is kept; check Canvas before assuming this was cancelled.</p>'
+    return ""
+
 def canvas_due_label(assignment):
     due = assignment["due_date"]
     if not due: return "No due date"
-    if due < today(): return f"Overdue · {friendly_date(due)}"
+    if due < today() and actionable_canvas(assignment) and not assignment["missing_from_canvas"]: return f"Overdue · {friendly_date(due)}"
     if due == today(): return "Due today"
     return f"Due {friendly_date(due)}"
 
@@ -182,6 +279,13 @@ def submission_label(raw):
     if not isinstance(values,list) or not values: return "Submission method not specified"
     return " / ".join(labels.get(x,x.replace("_"," ").capitalize()) for x in values if isinstance(x,str))
 
+def canvas_title_html(assignment):
+    url = str(assignment["html_url"] or "").strip()
+    title = esc(assignment["title"])
+    if url.lower().startswith("https://"):
+        return f'<a href="{esc(url)}" target="_blank" rel="noopener noreferrer">{title}</a>'
+    return title
+
 def canvas_assignment_html(assignment, *, show_class=False):
     url = str(assignment["html_url"] or "").strip()
     link = (f'<a class="canvas-open" href="{esc(url)}" target="_blank" rel="noopener noreferrer">Open in Canvas ↗</a>'
@@ -189,9 +293,10 @@ def canvas_assignment_html(assignment, *, show_class=False):
     prefix = f'<span class="task-class">{esc(assignment["class_name"])}</span>' if show_class else ""
     status = "Completed" if assignment["completed"] else canvas_due_label(assignment)
     due_class = "due-overdue" if not assignment["completed"] and status.startswith("Overdue") else ""
-    return (f'<div class="canvas-card">{prefix}<strong>{esc(assignment["title"])}</strong>'
+    return (f'<div class="canvas-card">{prefix}<strong>{canvas_title_html(assignment)}</strong>'
             f'<div class="canvas-meta"><small><span class="{due_class}">{esc(status)}</span> · '
-            f'{esc(submission_label(assignment["submission_types"]))}</small>{link}</div></div>')
+            f'{esc(submission_label(assignment["submission_types"]))}</small>{canvas_category_tag(assignment)}{link}</div>'
+            f'{canvas_presence_label(assignment)}</div>')
 
 def completed_canvas_history(assignments):
     cutoff = (family_today()-timedelta(days=7)).isoformat()
@@ -213,10 +318,10 @@ def manual_entries(conn):
     canvas=conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='canvas_assignments'").fetchone()
     if linked and canvas:
         relation="LEFT JOIN entry_canvas_links link ON link.entry_id=e.id LEFT JOIN canvas_assignments a ON a.id=link.canvas_assignment_id"
-        linked_columns="a.title AS linked_canvas_title, a.id AS linked_canvas_id"
+        linked_columns="a.title AS linked_canvas_title, a.id AS linked_canvas_id, a.due_date AS linked_canvas_due_date, a.missing_from_canvas AS linked_canvas_missing"
     else:
         relation=""
-        linked_columns="NULL AS linked_canvas_title, NULL AS linked_canvas_id"
+        linked_columns="NULL AS linked_canvas_title, NULL AS linked_canvas_id, NULL AS linked_canvas_due_date, 0 AS linked_canvas_missing"
     return conn.execute(f"""SELECT e.id,e.class_id,e.kind,e.details,e.done,e.parent_confirmed,
         e.coaching_note,e.progress,e.completed_at,e.due_date,{origin},{planned},c.name AS class_name,
         {linked_columns}
@@ -274,19 +379,9 @@ def student():
     canvas_by_class={}
     for assignment in canvas_assignments:
         if not assignment["completed"]: canvas_by_class.setdefault(assignment["class_id"],[]).append(assignment)
-    sync=present_sync_status(sync_coordinator.status())
-    parts=['<section class="panel"><h3>School updates</h3>',
-           f'<p><strong>{esc(sync.label)}</strong> — {esc(sync.message)}</p>']
-    if sync.state not in (SyncState.NOT_CONFIGURED.value,SyncState.RUNNING.value):
-        parts.append('<form method="post" action="/sync/run"><button type="submit">Check for updates</button></form>')
-    parts.append('</section>')
-    if sync.state==SyncState.RUNNING.value:
-        parts.append('''<script>(function(){let failures=0;async function checkSync(){try{
-            const response=await fetch('/api/sync/status',{cache:'no-store',headers:{'Accept':'application/json'}});
-            if(!response.ok)throw Error('Status unavailable');const status=await response.json();failures=0;
-            if(status.state!=='running'){window.location.reload();return;}
-            }catch(error){failures++;if(failures>=5){window.location.reload();return;}}
-            window.setTimeout(checkSync,1500);}window.setTimeout(checkSync,1500);}());</script>''')
+    parts=['<section class="panel"><h3>My tasks come first</h3><p><a class="canvas-open" href="/afternoon">Open today’s unified task plan →</a></p>'
+           '<p><small>Canvas information is grouped by purpose in My Afternoon. This class view is for school check-out.</small></p></section>',
+           sync_controls("/", heading="School updates")]
     if school_exception:
         kind_label='No school today' if school_exception['kind']=='closed' else 'Shortened / special school day'
         parts.append('<section class="panel"><h3>'+kind_label+'</h3><p>'+esc(school_exception['note'])+'</p></section>')
@@ -314,7 +409,7 @@ def student():
         parts.append(f'<section class="panel"><h3>{esc(cls["name"])}' + (f' · Period {esc(cls["period_label"])} ({esc(american_time(cls["period_start"]))})' if cls["period_label"] else '') + '</h3>'
                      f'<p class="status {css}">{checkin_label(cid,checkins)}</p>')
         if canvas_by_class.get(cid):
-            parts.append('<h4>Canvas assignments to do</h4>')
+            parts.append('<h4>Canvas information to check</h4>')
             parts.extend(canvas_assignment_html(a) for a in canvas_by_class[cid])
         for item in by_class.get(cid,[]):
             status=' class="done"' if item["done"] else ''
@@ -399,6 +494,16 @@ def review():
         'you need to do at home, and do you have what you need to bring home?</p>',
         f'<p><strong>{completed} of {len(classes)}</strong> classes reviewed today.</p></section>',
     ]
+    with db() as conn:
+        class_materials = conn.execute("""SELECT m.id,m.class_id,m.description,
+            COALESCE(p.packed,0) AS packed FROM class_materials m
+            JOIN classes c ON c.id=m.class_id
+            LEFT JOIN material_packing p ON p.material_id=m.id AND p.day=?
+            WHERE c.enabled=1 AND c.archived=0 ORDER BY c.sort_order,c.id,m.id""",
+            (today(),)).fetchall()
+    materials_by_class = {}
+    for material in class_materials:
+        materials_by_class.setdefault(material["class_id"], []).append(material)
     for cls in classes:
         cid = cls["id"]
         record = school_reviews.get(cid)
@@ -452,6 +557,23 @@ def review():
         if canvas:
             parts.append('<p>Canvas assignments to double-check:</p>')
             parts.extend(canvas_assignment_html(a) for a in canvas)
+        parts.append('<details><summary>Materials for this class</summary>'
+                     '<p>Keep this list for future school days. Packing checks reset each day.</p>')
+        for material in materials_by_class.get(cid, []):
+            mid = material["id"]
+            packed = bool(material["packed"])
+            parts.append(f'<div class="class"><strong>{esc(material["description"])}</strong> — '
+                         + ('Packed today' if packed else 'Not packed today')
+                         + f'<form class="inline" method="post" action="/school/materials/{mid}/packed">'
+                         + f'<input type="hidden" name="packed" value="{"" if packed else "yes"}">'
+                         + f'<button class="secondary" type="submit">{"Undo packed" if packed else "Mark packed"}</button></form> '
+                         + f'<form class="inline" method="post" action="/school/materials/{mid}/delete">'
+                         + '<button class="secondary" type="submit">Remove</button></form></div>')
+        parts.append(f'<form method="post" action="/school/classes/{cid}/materials">'
+                     f'<label for="material-{cid}">Add a reusable material</label>'
+                     f'<input id="material-{cid}" name="description" maxlength="120" required '
+                     'placeholder="e.g. Math workbook">'
+                     '<button type="submit">Add material</button></form></details>')
         parts.append(
             '<p>Forgot to write something down? '
             '<a href="/add">Add it to your class notes</a>.</p>'
@@ -511,33 +633,34 @@ def home():
     open_entries=[e for e in entries if not e["done"] and (not e["planned_date"] or e["planned_date"] <= today())]
     waiting=[e for e in entries if e["done"] and not e["parent_confirmed"]]
     upcoming=[e for e in entries if not e["done"] and e["planned_date"] and e["planned_date"] > today()]
-    parts=['<section class="panel"><h3>Today’s plan</h3>',
-           '<p>Canvas work, classroom reminders, and other unfinished tasks in one place. '
-           'Canvas due dates are the official deadlines; a completed Canvas submission may still need review.</p>',
-           '<div class="summary-grid">',
-           f'<span><strong>{len(incomplete)}</strong> Canvas to do</span>',
-           f'<span><strong>{len(open_entries)}</strong> Added tasks open</span>',
-           f'<span><strong>{len(waiting)}</strong> Waiting for parent</span>',
-           '</div><p><a href="/add">+ Add something I still need to do</a></p></section>',
-           '<section class="panel"><h3>Work to do</h3><div class="task-group">']
-    if not incomplete and not open_entries and not lunch_open:
-        parts.append('<p>No unfinished work is recorded. Check with an adult before assuming there is nothing else.</p>')
-    # Display related Canvas and manual work together without merging their records.
-    linked_open = {}
+    linked_open={}
     for entry in open_entries:
         if entry["linked_canvas_id"] is not None:
             linked_open.setdefault(entry["linked_canvas_id"], []).append(entry)
-    rendered_entry_ids = set()
-
-    def manual_task_card(item, *, nested=False):
-        state = item["progress"] or "not_started"
-        origin = "Parent added" if item["origin"] == "parent" else "Added information"
-        card_class = "task-card linked-child" if nested else "task-card"
-        related = (f'<p class="muted">Related Canvas: {esc(item["linked_canvas_title"])}</p>'
-                   if item["linked_canvas_title"] and not nested else "")
-        return (f'<article class="{card_class}"><span class="task-class">{esc(item["class_name"])}</span>'
-                f'<span class="task-origin">{origin}</span><h4>{esc(item["details"])}</h4>'
-                f'<p class="muted">{esc(item["kind"])}</p>{deadline_html(item)}{related}'
+    parts=['<section class="panel"><h3>Today’s plan</h3>',
+           '<p>Family tasks and actionable Canvas work are together. Other Canvas materials are below, not treated as overdue homework.</p>',
+           '<div class="summary-grid">',
+           f'<span><strong>{len(open_entries)}</strong> family tasks</span>',
+           f'<span><strong>{sum(actionable_canvas(a) and a["id"] not in linked_open for a in incomplete)}</strong> Canvas actions</span>',
+           f'<span><strong>{len(waiting)}</strong> waiting for parent</span>',
+           '</div><p><a href="/add">+ Add something I still need to do</a></p></section>',
+           '<section class="panel"><h3>My tasks</h3><div class="task-group">']
+    rendered_entry_ids=set()
+    def manual_task_card(item):
+        state=item["progress"] or "not_started"
+        origin="Parent added" if item["origin"]=="parent" else "Added information"
+        conflict = (f'<p class="muted" role="status">Dates differ: family task {esc(friendly_date(item["due_date"]))}; '
+                    f'Canvas {esc(friendly_date(item["linked_canvas_due_date"]))}. '
+                    'Family task date controls this task.</p>'
+                    if item["linked_canvas_id"] is not None and item["due_date"] and
+                    item["linked_canvas_due_date"] and item["due_date"] != item["linked_canvas_due_date"] else "")
+        missing = ('<p class="muted">Canvas item no longer found in latest import; this family task remains.</p>'
+                   if item["linked_canvas_missing"] else "")
+        related=(f'<p class="muted">Related Canvas: {esc(item["linked_canvas_title"])} · Notes and tasks (1)</p>' 
+                 if item["linked_canvas_title"] else "")
+        return (f'<article class="task-card"><span class="task-class">{esc(item["class_name"])}</span>'
+                f'<span class="task-origin">{origin}</span>{related}{conflict}{missing}<h4>{esc(item["details"])}</h4>' 
+                f'<p class="muted">{esc(item["kind"])}</p>{deadline_html(item)}'
                 f'<form class="task-progress" method="post" action="/entries/{item["id"]}/progress">'
                 f'<label for="progress-{item["id"]}">Progress</label>'
                 f'<select id="progress-{item["id"]}" name="progress">'
@@ -547,36 +670,35 @@ def home():
                 '<button type="submit">Save progress</button></form>'
                 + (f'<p><small>Parent note: {esc(item["coaching_note"])}</small></p>'
                    if item["coaching_note"] else '') + '</article>')
-
-    for item in incomplete:
-        url = str(item["html_url"] or "").strip()
-        link = (f'<a class="canvas-open" href="{esc(url)}" target="_blank" rel="noopener noreferrer">Open in Canvas ↗</a>'
-                if url.lower().startswith("https://") else "")
-        due_label = canvas_due_label(item)
-        due_class = "due-overdue" if due_label.startswith("Overdue") else ""
-        children = linked_open.get(item["id"], [])
-        parts.append(f'<article class="task-card"><div class="task-top"><div>'
-                     f'<span class="task-class">{esc(item["class_name"])}</span>'
-                     '<span class="task-origin">Canvas assignment · Official details</span>'
-                     f'<h4>{esc(item["title"])}</h4><p class="muted"><span class="{due_class}">{esc(due_label)}</span> · '
-                     f'{esc(submission_label(item["submission_types"]))}</p></div>{link}</div>')
-        if children:
-            parts.append(f'<div class="linked-work"><h5>Related Canvas: {esc(item["title"])} · Notes and tasks ({len(children)})</h5>'
-                         '<p class="muted"><small>Canvas and added tasks keep separate progress and deadlines.</small></p>')
-            for entry in children:
-                parts.append(manual_task_card(entry, nested=True))
-                rendered_entry_ids.add(entry["id"])
-            parts.append('</div>')
-        parts.append('</article>')
+    # Family tasks first, even if they are linked to Canvas; no duplicate Canvas card.
     for item in open_entries:
-        if item["id"] not in rendered_entry_ids:
-            parts.append(manual_task_card(item))
+        parts.append(manual_task_card(item))
+        rendered_entry_ids.add(item["id"])
+    for item in incomplete:
+        if not actionable_canvas(item) or item["id"] in linked_open:
+            continue
+        parts.append(canvas_assignment_html(item,show_class=True))
+    if not open_entries and not any(actionable_canvas(a) and a["id"] not in linked_open for a in incomplete) and not lunch_open:
+        parts.append('<p>No action tasks recorded. Check unsorted Canvas items below with a parent.</p>')
     for task in lunch_open:
         parts.append(f'<article class="task-card"><span class="task-class">{esc(task["activity_name"])}</span><span class="task-origin">Lunch Buddies</span>'
                      f'<h4>{esc(task["details"])}</h4>'
                      f'<form method="post" action="/parent/lunch-buddies/tasks/{task["id"]}/done">'
                      '<button type="submit">Done</button></form></article>')
     parts.append('</div></section>')
+    for category,heading in (("assessment","Upcoming assessments"),("review","Review and reference"),
+                             ("class","In-class information"),("unsorted","Unsorted Canvas items")):
+        items=[a for a in incomplete if canvas_category(a)==category and a["id"] not in linked_open]
+        if not items: continue
+        if category=="assessment":
+            parts.append(f'<section class="panel"><h3>{heading} ({len(items)})</h3>')
+        else:
+            parts.append(f'<details class="panel"><summary>{heading} ({len(items)})</summary>')
+        if category=="unsorted":
+            parts.append('<p><small>These may be homework, class activities, or reference materials. Ask a parent before treating them as tasks.</small></p>')
+        for a in sorted(items,key=lambda a:(a["due_date"] is None,a["due_date"] or "9999",a["title"])):
+            parts.append(canvas_assignment_html(a,show_class=True))
+        parts.append('</section>' if category=="assessment" else '</details>')
     if upcoming:
         parts.append(f'<details class="panel"><summary>Planned for later ({len(upcoming)})</summary>'
                      '<p><small>These tasks are saved, but their planned work dates have not arrived. '
@@ -627,6 +749,59 @@ def parent():
            'Archived and disabled classes are excluded from the daily review.</small></p>',
            '<p><a href="/afternoon">View shared afternoon plan</a> · '
            '<a href="/settings">Configure SyncCanvas</a> · <a href="/parent/classes">Manage Classes</a></p></section>']
+    parts.append(sync_controls("/parent"))
+    # Supportive attention cues, never a score or an inferred grade.
+    with db() as conn:
+        canvas_attention = get_canvas_assignments(conn)
+    late_manual = [t for t in tasks if not t["done"] and t["due_date"] and t["due_date"] < today()]
+    late_canvas = [a for a in canvas_attention if not a["completed"] and actionable_canvas(a) and a["due_date"] and a["due_date"] < today()]
+    needs_help = [t for t in tasks if not t["done"] and t["progress"] == "stuck"]
+    parts.append('<section class="panel"><h3>Work that may need attention</h3>'
+                 '<p>These are reminders to check in together, not grades or penalties.</p>')
+    if not (late_manual or late_canvas or needs_help):
+        parts.append('<p>No late or stuck work recorded.</p>')
+    else:
+        if late_manual or late_canvas:
+            parts.append('<h4>Past due — check together</h4><ul>')
+            for task in late_manual:
+                parts.append(f'<li>{esc(task["class_name"])}: {esc(task["details"])} '
+                             f'(due {esc(friendly_date(task["due_date"]))})</li>')
+            for assignment in late_canvas:
+                parts.append(f'<li>{esc(assignment["class_name"])}: {canvas_title_html(assignment)} '
+                             f'(due {esc(friendly_date(assignment["due_date"]))})</li>')
+            parts.append('</ul>')
+        if needs_help:
+            parts.append('<h4>Needs help — ask what is blocking progress</h4><ul>')
+            for task in needs_help:
+                parts.append(f'<li>{esc(task["class_name"])}: {esc(task["details"])}</li>')
+            parts.append('</ul>')
+    parts.append('</section>')
+    review_items = [a for a in canvas_attention if a["canvas_submitted"] and not a["review_dismissed"]]
+    parts.append('<section class="panel"><h3>Canvas submissions to review</h3>'
+                 '<p>Submitted in Canvas and counted as complete. Check the original assignment if you want; grades are not required.</p>')
+    if not review_items:
+        parts.append('<p>No Canvas submissions awaiting review.</p>')
+    for assignment in review_items:
+        parts.append(f'<div class="canvas-card"><strong>{canvas_title_html(assignment)}</strong> '
+                     f'<small>({esc(assignment["class_name"])}) · Needs review</small>'
+                     f'<form method="post" action="/parent/canvas/{assignment["id"]}/review">'
+                     '<button type="submit">Reviewed</button></form></div>')
+    parts.append('</section>')
+    parts.append('<section class="panel"><h3>Sort Canvas information</h3>'
+                 '<p>Suggested classifications are editable. Your choice survives Canvas updates. '
+                 'An item marked Review, In class, or Unsorted is never flagged as overdue homework.</p>')
+    for assignment in canvas_attention:
+        if assignment["completed"]: continue
+        parts.append(f'<div class="compact-canvas"><strong>{canvas_title_html(assignment)}</strong> '
+                     f'<small>({esc(assignment["class_name"])})</small> '
+                     f'{canvas_category_tag(assignment)}{canvas_presence_label(assignment)}{canvas_category_editor(assignment)}' 
+                     f'<form method="post" action="/parent/canvas/{assignment["id"]}/add-task">'
+                     '<label>Turn into a family task</label>'
+                     '<select name="kind"><option value="Study">Study</option>'
+                     '<option value="Homework">Homework</option>'
+                     '<option value="Review">Review</option></select>'
+                     '<button type="submit">Add to My Tasks</button></form></div>')
+    parts.append('</section>')
     parts.append('<section class="panel"><h3>School follow-up</h3>'
                  f'<p>{school_review_count}/{len(classes)} classes have a saved school review today. '
                  f'Pocket checked: {"yes" if paper_review and paper_review[0] else "no"}. '
@@ -675,8 +850,10 @@ def parent():
                 choices=[a for a in linked_choices if a["class_id"]==cid]
                 if task["linked_canvas_id"]:
                     parts.append(f'<p><small>Related Canvas assignment: {esc(task["linked_canvas_title"])} '
-                                 '(the two records remain separate)</small></p>'
-                                 f'<form class="inline" method="post" action="/parent/entries/{tid}/canvas-unlink">'
+                                 '(the two records remain separate; family task dates and completion stay independent)</small></p>'
+                                 + ('<p role="status">Canvas item not found in latest import. Family task preserved.</p>' if task["linked_canvas_missing"] else '')
+                                 + (f'<p role="status">Date conflict: family {esc(friendly_date(task["due_date"]))}; Canvas {esc(friendly_date(task["linked_canvas_due_date"]))}. Family date takes precedence for this task.</p>' if task["due_date"] and task["linked_canvas_due_date"] and task["due_date"] != task["linked_canvas_due_date"] else '')
+                                 + f'<form class="inline" method="post" action="/parent/entries/{tid}/canvas-unlink">'
                                  '<button class="secondary" type="submit">Remove Canvas link</button></form>')
                 if choices:
                     parts.append(f'<form method="post" action="/parent/entries/{tid}/canvas-link">'
@@ -760,6 +937,7 @@ def settings():
            '<section class="panel"><h3>Access and safety</h3>',
            '<p>This prototype does not yet enforce separate parent, student, or school staff accounts. '
            'Keep it local; do not expose it publicly or enter sensitive student information.</p></section>']
+    parts.insert(0, sync_controls("/settings"))
     parts.append('<section class="panel"><h3>Recurring expectations</h3>'
                  '<p>Parent-configured practice or study appears automatically on the afternoon plan. '
                  'Each day gets a separate task so yesterday’s completion is preserved.</p>')

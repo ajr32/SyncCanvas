@@ -79,6 +79,12 @@ class CanvasImportWorker:
                 updated += result.updated_count
                 unchanged += result.unchanged_count
 
+        # Only record success after every course has fetched and committed.
+        with db() as conn:
+            conn.execute("""INSERT INTO canvas_sync_audit(id,last_success_at)
+                VALUES(1,CURRENT_TIMESTAMP)
+                ON CONFLICT(id) DO UPDATE SET last_success_at=excluded.last_success_at""")
+
         summary = CanvasImportSummary(
             courses_processed=len(prepared),
             added=added,

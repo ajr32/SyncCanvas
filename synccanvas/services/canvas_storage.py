@@ -80,6 +80,9 @@ def load_canvas_assignments(
             student_notes=row["student_notes"],
             completed=bool(row["completed"]),
             submission_types=tuple(json.loads(row["submission_types"])) if "submission_types" in row.keys() else (),
+            canvas_submitted=bool(row["canvas_submitted"]) if "canvas_submitted" in row.keys() else False,
+            canvas_missing=bool(row["canvas_missing"]) if "canvas_missing" in row.keys() else False,
+            review_dismissed=bool(row["review_dismissed"]) if "review_dismissed" in row.keys() else False,
         )
         for row in rows
     ]
@@ -136,9 +139,9 @@ def import_canvas_assignments(
                     due_at,
                     due_date,
                     html_url,
-                    submission_types
+                    submission_types, canvas_submitted, canvas_missing, completed, last_seen_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(
                     canvas_course_id,
                     canvas_assignment_id
@@ -149,7 +152,12 @@ def import_canvas_assignments(
                     due_at = excluded.due_at,
                     due_date = excluded.due_date,
                     html_url = excluded.html_url,
-                    submission_types = excluded.submission_types
+                    submission_types = excluded.submission_types,
+                    canvas_submitted = excluded.canvas_submitted,
+                    canvas_missing = excluded.canvas_missing,
+                    completed = CASE WHEN canvas_assignments.completed=1 OR excluded.canvas_submitted=1 THEN 1 ELSE 0 END,
+                    missing_from_canvas = 0,
+                    last_seen_at = CURRENT_TIMESTAMP
                 """,
                 (
                     record.course_id,
@@ -160,9 +168,26 @@ def import_canvas_assignments(
                     record.due_date,
                     record.html_url,
                     json.dumps(record.submission_types),
+                    int(record.canvas_submitted),
+                    int(record.canvas_missing),
+                    int(record.completed),
                 ),
             )
 
+        # A successful full-course fetch is the only evidence for absence.
+        # Never delete an imported assignment or a family task linked to it.
+        seen_ids = [item.canvas_id for item in items]
+        if seen_ids:
+            placeholders = ",".join("?" for _ in seen_ids)
+            conn.execute(f"""UPDATE canvas_assignments
+                SET missing_from_canvas=1
+                WHERE canvas_course_id=? AND canvas_assignment_id NOT IN ({placeholders})""",
+                (course_id, *seen_ids))
+        else:
+            conn.execute("UPDATE canvas_assignments SET missing_from_canvas=1 WHERE canvas_course_id=?", (course_id,))
+        conn.execute("""UPDATE canvas_assignments
+            SET missing_from_canvas=0, last_seen_at=CURRENT_TIMESTAMP
+            WHERE canvas_course_id=? AND missing_from_canvas=0""", (course_id,))
         conn.execute("RELEASE SAVEPOINT canvas_import")
         return result
 

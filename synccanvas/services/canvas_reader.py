@@ -25,6 +25,8 @@ class CanvasAssignment:
     due_at: str | None
     html_url: str | None
     submission_types: tuple[str, ...] = ()
+    canvas_submitted: bool = False
+    canvas_missing: bool = False
 
 
 def _positive_id(value: Any, field: str) -> int:
@@ -70,6 +72,15 @@ def parse_assignment(
     ):
         raise CanvasReadError("Invalid Canvas submission methods.")
 
+    submission = raw.get("submission")
+    if submission is not None and not isinstance(submission, Mapping):
+        raise CanvasReadError("Invalid Canvas submission information.")
+    # Only an actual submission, not a grade or due date, counts as done.
+    submitted = bool(submission and (
+        submission.get("submitted_at") or
+        submission.get("workflow_state") in ("submitted", "graded")
+    ))
+
     return CanvasAssignment(
         canvas_id=assignment_id,
         course_id=course_id,
@@ -78,6 +89,8 @@ def parse_assignment(
         due_at=due_at,
         html_url=html_url,
         submission_types=tuple(types),
+        canvas_submitted=submitted,
+        canvas_missing=bool(submission and submission.get('missing') is True and not submitted),
     )
 
 

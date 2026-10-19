@@ -2,6 +2,10 @@ fastapi<1,>=0.110
 uvicorn<1,>=0.27
 python-multipart<1,>=0.0.9
 
+[dev]
+ruff<1,>=0.8
+mypy<2,>=1.13
+
 [test]
 pytest<10,>=8
 httpx<1,>=0.27

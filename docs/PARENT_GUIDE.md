@@ -21,6 +21,8 @@ Help the student keep task descriptions clear and connected to the correct class
 After selecting Save or Submit, wait for the page to respond before pressing the button again. Repeated clicks can create confusion. If a form reports an error, correct the indicated information and try once more. If the page is unresponsive, check whether the item already appears before entering it again.
 
 ## Sync status
+Open **Parent Review** or **Settings** and select **Check for updates** to import the latest Canvas information. SyncCanvas returns to the same page and shows progress while an update runs. **Settings** also shows the last successful update time when available; this in-memory status resets after restarting the server. The student home update button remains available.
+
 The planner may display a school-update or synchronization status. **Not connected** means an external school connection is not configured. **Updating** means a synchronization is in progress; **Up to date** indicates a successful reported update. Check the displayed information rather than assuming all school data is complete.
 
 ## Privacy and limitations
@@ -28,3 +30,13 @@ The current local prototype does not provide secure student/parent logins or saf
 
 ## Quick family check
 Open the student view and confirm that today's classes, any closure or shortened-day times, Lunch Buddies activities, and tasks appear as expected. Add a harmless sample task if needed, check the student completion flow, and remove the sample when finished.
+
+## Reusable class materials and supportive attention cues
+
+In **School Check-Out**, each active class has **Materials for this class**. Materials stay on the list across days; packed/unpacked checks apply to the current day. Remove obsolete items as needed. The separate daily packing list remains available.
+
+The **Parent Review** page shows **Work that may need attention**. **Past due — check together** includes unfinished manual tasks and unfinished Canvas assignments with due dates before today. **Needs help — ask what is blocking progress** includes unfinished manual tasks explicitly marked stuck. A task may appear in both categories. Completed work is excluded. These are supportive reminders, not grades, scores, or evidence of misconduct.
+
+### Reviewing submitted Canvas assignments
+
+After **Check for updates**, assignments reported submitted in Canvas count as complete and do not appear as overdue. On **Parent Review**, the **Canvas submissions to review** section displays a small **Needs review** reminder. Click the assignment title to open Canvas in a new tab, then select **Reviewed** to clear the reminder. No grade is required. SyncCanvas never submits or changes anything in Canvas. Existing manual completion is preserved.

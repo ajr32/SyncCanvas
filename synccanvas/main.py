@@ -2,6 +2,8 @@
 from __future__ import annotations
 from dataclasses import asdict
 import sqlite3
+import logging
+import uuid
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.exceptions import RequestValidationError
@@ -19,6 +21,35 @@ from synccanvas.services.tasks import TaskInput, validate_task, validate_task_de
 from synccanvas.parent_schedule import router as parent_schedule_router
 
 app = FastAPI(title="SyncCanvas (local prototype)")
+
+# Local diagnostics: never record URLs, bodies, credentials, or student details.
+reliability_logger = logging.getLogger("synccanvas.reliability")
+
+
+@app.middleware("http")
+async def safe_request_logging(request: Request, call_next):
+    request_id = uuid.uuid4().hex[:12]
+    try:
+        response = await call_next(request)
+    except Exception:
+        reliability_logger.error("request_failed id=%s", request_id)
+        raise
+    reliability_logger.info("request_completed id=%s status=%d", request_id, response.status_code)
+    response.headers["X-Request-ID"] = request_id
+    return response
+
+
+@app.get("/api/health", include_in_schema=False)
+def health():
+    # No external network requests or credentials are needed for a local liveness check.
+    try:
+        with db() as conn:
+            conn.execute("SELECT 1").fetchone()
+    except sqlite3.Error:
+        reliability_logger.error("health_database_unavailable")
+        return JSONResponse({"status": "unavailable", "database": "unavailable"}, status_code=503)
+    return {"status": "ok", "database": "ok"}
+
 
 
 def _wants_html(request: Request) -> bool:
@@ -124,6 +155,39 @@ def school_followup(class_id: int, resolution: str = Form(...), note: str = Form
     return go("/review")
 
 
+@app.post("/school/classes/{class_id}/materials")
+def add_class_material(class_id: int, description: str = Form(...)):
+    description = description.strip()
+    if not 1 <= len(description) <= 120:
+        raise HTTPException(422, "Material description must be 1–120 characters")
+    with db() as conn:
+        require_class(conn, class_id)
+        conn.execute("INSERT OR IGNORE INTO class_materials(class_id,description) VALUES (?,?)",
+                     (class_id, description))
+    return go("/review")
+
+
+@app.post("/school/materials/{material_id}/packed")
+def set_class_material_packed(material_id: int, packed: str = Form("")):
+    with db() as conn:
+        if not conn.execute("""SELECT 1 FROM class_materials m JOIN classes c ON c.id=m.class_id
+                              WHERE m.id=? AND c.enabled=1 AND c.archived=0""", (material_id,)).fetchone():
+            raise HTTPException(404, "Material not found in an active class")
+        conn.execute("""INSERT INTO material_packing(material_id,day,packed) VALUES (?,?,?)
+                        ON CONFLICT(material_id,day) DO UPDATE SET packed=excluded.packed""",
+                     (material_id, today(), int(packed == "yes")))
+    return go("/review")
+
+
+@app.post("/school/materials/{material_id}/delete")
+def delete_class_material(material_id: int):
+    with db() as conn:
+        result = conn.execute("DELETE FROM class_materials WHERE id=?", (material_id,))
+        if not result.rowcount:
+            raise HTTPException(404, "Material not found")
+    return go("/review")
+
+
 @app.post("/school/packing/add")
 def add_packing_item(item_type: str = Form(...), description: str = Form(...)):
     description = description.strip()
@@ -225,6 +289,44 @@ def checked_today(class_id: int):
         require_class(conn, class_id)
         set_checkin(conn, class_id)
     return go()
+
+@app.post("/parent/canvas/{assignment_id}/category")
+def set_canvas_category(assignment_id: int, category: str = Form(...)):
+    from synccanvas.pages import CANVAS_CATEGORIES
+    if category != "auto" and category not in CANVAS_CATEGORIES:
+        raise HTTPException(422, "Unknown Canvas category")
+    with db() as conn:
+        result=conn.execute("UPDATE canvas_assignments SET family_category=? WHERE id=?",
+                            (category, assignment_id))
+        if not result.rowcount:
+            raise HTTPException(404, "Canvas assignment not found")
+    return go("/parent")
+
+
+@app.post("/parent/canvas/{assignment_id}/add-task")
+def add_canvas_family_task(assignment_id: int, kind: str = Form("Study")):
+    if kind not in ("Study", "Homework", "Review"):
+        raise HTTPException(422, "Unknown task type")
+    with db() as conn:
+        assignment=conn.execute("""SELECT a.id,a.title,l.class_id FROM canvas_assignments a
+            JOIN canvas_course_links l ON l.canvas_course_id=a.canvas_course_id
+            JOIN classes c ON c.id=l.class_id
+            WHERE a.id=? AND c.enabled=1 AND c.archived=0""",(assignment_id,)).fetchone()
+        if assignment is None:
+            raise HTTPException(404, "Canvas assignment not found")
+        existing=conn.execute("""SELECT e.id FROM entry_canvas_links link
+            JOIN entries e ON e.id=link.entry_id
+            WHERE link.canvas_assignment_id=? AND e.done=0 LIMIT 1""",(assignment_id,)).fetchone()
+        if existing:
+            return go("/afternoon")
+        details=("Study for " if kind=="Study" else "Review " if kind=="Review" else "Complete ")+assignment["title"]
+        conn.execute("""INSERT INTO entries(class_id,kind,details,origin)
+            VALUES (?,?,?,'parent')""",(assignment["class_id"],kind,details[:300]))
+        task_id=conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute("INSERT INTO entry_canvas_links(entry_id,canvas_assignment_id) VALUES (?,?)",
+                     (task_id,assignment_id))
+    return go("/afternoon")
+
 
 @app.post("/parent/entries/{entry_id}/canvas-link")
 def link_canvas_task(entry_id: int, canvas_assignment_id: int = Form(...)):
@@ -403,9 +505,11 @@ def sync_run():
     return asdict(background_sync.request_sync())
 
 @app.post("/sync/run")
-def sync_run_from_page():
+def sync_run_from_page(return_to: str = Form("/")):
+    # Only allow known local destinations; never redirect to an external URL.
+    destination = return_to if return_to in ("/", "/parent", "/settings") else "/"
     sync_coordinator.request_sync()
-    return go("/")
+    return go(destination)
 
 app.include_router(pages_router)
 app.include_router(parent_classes_router)
@@ -414,3 +518,15 @@ app.include_router(parent_schedule_router)
 app.include_router(lunch_buddies_router)
 from synccanvas.school_days import router as school_days_router
 app.include_router(school_days_router)
+
+@app.post("/parent/canvas/{assignment_id}/review")
+def mark_canvas_reviewed(assignment_id: int):
+    from fastapi.responses import RedirectResponse
+    with db() as conn:
+        result = conn.execute(
+            "UPDATE canvas_assignments SET review_dismissed=1 WHERE id=? AND canvas_submitted=1",
+            (assignment_id,),
+        )
+        if result.rowcount == 0:
+            raise HTTPException(404, "Canvas submission not found")
+    return RedirectResponse("/parent", status_code=303)

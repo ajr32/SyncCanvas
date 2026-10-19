@@ -37,6 +37,9 @@ class PlannerAssignment:
 
     source: str = "canvas"
     submission_types: tuple[str, ...] = ()
+    canvas_submitted: bool = False
+    canvas_missing: bool = False
+    review_dismissed: bool = False
 
 
 @dataclass(frozen=True)
@@ -85,6 +88,9 @@ def _new_record(item: MappedAssignment) -> PlannerAssignment:
         due_date=item.due_date,
         html_url=item.html_url,
         submission_types=item.submission_types,
+        canvas_submitted=item.canvas_submitted,
+        canvas_missing=item.canvas_missing,
+        completed=item.canvas_submitted,
     )
 
 
@@ -101,6 +107,9 @@ def _update_record(
         due_date=incoming.due_date,
         html_url=incoming.html_url,
         submission_types=incoming.submission_types,
+        canvas_submitted=incoming.canvas_submitted,
+        canvas_missing=incoming.canvas_missing,
+        completed=existing.completed or incoming.canvas_submitted,
     )
 
 
