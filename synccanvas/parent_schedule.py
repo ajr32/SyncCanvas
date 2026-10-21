@@ -4,7 +4,7 @@ import re
 import sqlite3
 from datetime import datetime
 
-from fastapi import APIRouter, Form
+from fastapi import APIRouter, Form, Request
 from fastapi.responses import RedirectResponse
 
 from synccanvas.database import db
@@ -73,6 +73,38 @@ def schedule():
             assignment["period_id"], set()
         ).add(assignment["class_id"])
 
+    # A single editor for the whole school day. Each class has one period.
+    assigned_by_class = {}
+    for assignment in assignments:
+        assigned_by_class.setdefault(assignment["class_id"], assignment["period_id"])
+
+    mass_editor = [
+        '<section class="panel"><h3>Assign all classes to periods</h3>',
+        '<p>Choose a period for each class, then save everything at once. '
+        'Unassigned classes stay at the bottom of the student schedule.</p>',
+    ]
+    if periods and classes:
+        mass_editor.append('<form method="post" action="/parent/schedule/assign-all">')
+        for cls in classes:
+            cid = cls["id"]
+            mass_editor.append(
+                f'<label for="class-period-{cid}">{esc(cls["name"])}</label>'
+                f'<select id="class-period-{cid}" name="class_{cid}">'
+                '<option value="">Not assigned</option>'
+            )
+            for period in periods:
+                selected = " selected" if assigned_by_class.get(cid) == period["id"] else ""
+                mass_editor.append(
+                    f'<option value="{period["id"]}"{selected}>'
+                    f'Period {esc(period["label"])} '
+                    f'({esc(display_time(period["start_time"]))})</option>'
+                )
+            mass_editor.append('</select>')
+        mass_editor.append('<p><button type="submit">Save All Class Assignments</button></p></form>')
+    else:
+        mass_editor.append('<p>Add bell periods and enable classes first.</p>')
+    mass_editor.append('</section>')
+
     parts = [
         '<section class="panel">',
         '<p><a href="/parent">← Parent Page</a></p>',
@@ -101,6 +133,8 @@ def schedule():
         '<p><button type="submit">Add period</button></p>'
         '</form></section>'
     )
+
+    parts.extend(mass_editor)
 
     for period in periods:
         period_id = period["id"]
@@ -227,6 +261,50 @@ def validate(label, start_time, end_time, days):
         end_time,
         "".join(sorted(set(days))),
     )
+
+
+@router.post("/assign-all")
+async def assign_all(request: Request):
+    """Atomically replace each active class's period using one submitted form."""
+    form = await request.form()
+    try:
+        with db() as conn:
+            classes = conn.execute(
+                "SELECT id FROM classes WHERE enabled=1 AND archived=0"
+            ).fetchall()
+            periods = {
+                row["id"] for row in conn.execute("SELECT id FROM bell_periods")
+            }
+            choices = {}
+            for cls in classes:
+                cid = cls["id"]
+                raw = form.get(f"class_{cid}")
+                if raw is None:
+                    raise ValueError("The submitted schedule is incomplete.")
+                if not isinstance(raw, str):
+                    raise ValueError("Invalid class assignment.")
+                if raw == "":
+                    choices[cid] = None
+                    continue
+                try:
+                    period_id = int(raw)
+                except ValueError:
+                    raise ValueError("Invalid period selected.")
+                if period_id not in periods:
+                    raise ValueError("A selected period no longer exists.")
+                choices[cid] = period_id
+
+            # Validate all choices before making any changes.
+            for cid, period_id in choices.items():
+                conn.execute("DELETE FROM class_periods WHERE class_id=?", (cid,))
+                if period_id is not None:
+                    conn.execute(
+                        "INSERT INTO class_periods(class_id,period_id) VALUES (?,?)",
+                        (cid, period_id),
+                    )
+    except (ValueError, sqlite3.IntegrityError) as exc:
+        return error(f"Could not save class schedule: {exc}")
+    return back()
 
 
 @router.post("/add")

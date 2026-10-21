@@ -6,7 +6,7 @@ import secrets
 import sqlite3
 from datetime import date, datetime, timedelta
 from synccanvas.services.family_time import family_today
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Form
 from fastapi.responses import HTMLResponse
 from synccanvas.database import db
 from synccanvas.services.recurring import ensure_today
@@ -167,38 +167,134 @@ def options(selected=""):
     return "".join(f'<option value="{esc(kind)}"{" selected" if kind == selected else ""}>{esc(kind)}</option>' for kind in KINDS)
 
 def get_active_classes(conn):
-    weekday = str(family_today().weekday())
+    """Show classes in bell-period order, including on weekends and days off.
+
+    Today's meeting periods take priority when school is open. Other classes
+    follow in their normal bell-period order; unassigned classes come last.
+    """
     day = family_today().isoformat()
+    weekday = str(family_today().weekday())
     try:
-        exception = conn.execute('SELECT kind FROM school_days WHERE day=?', (day,)).fetchone()
-        if exception and exception['kind']=='closed':
-            return conn.execute("SELECT id,name,NULL AS period_label,NULL AS period_start FROM classes WHERE enabled=1 AND archived=0 ORDER BY sort_order,id").fetchall()
-    except sqlite3.OperationalError as exc:
-        if 'no such table' not in str(exc): raise
-    try:
-        return conn.execute("""
-        SELECT c.id, c.name,
-            (SELECT p.label FROM class_periods cp JOIN bell_periods p
-             ON p.id=cp.period_id WHERE cp.class_id=c.id
-             AND instr(p.weekdays, ?) > 0
-             ORDER BY p.start_time, p.id LIMIT 1) AS period_label,
-            (SELECT COALESCE((SELECT sp.start_time FROM school_day_periods sp WHERE sp.period_id=p.id AND sp.day=?),p.start_time) FROM class_periods cp JOIN bell_periods p
-             ON p.id=cp.period_id WHERE cp.class_id=c.id
-             AND instr(p.weekdays, ?) > 0
-             ORDER BY COALESCE((SELECT sp.start_time FROM school_day_periods sp WHERE sp.period_id=p.id AND sp.day=?),p.start_time), p.id LIMIT 1) AS period_start
-        FROM classes c WHERE c.enabled=1 AND c.archived=0
-        ORDER BY CASE WHEN (SELECT 1 FROM class_periods cp
-                            JOIN bell_periods p ON p.id=cp.period_id
-                            WHERE cp.class_id=c.id AND instr(p.weekdays, ?) > 0
-                            LIMIT 1) IS NULL THEN 1 ELSE 0 END,
-                 period_start, c.sort_order, c.id
-    """, (weekday, day, weekday, day, weekday)).fetchall()
+        closed = conn.execute(
+            "SELECT kind FROM school_days WHERE day=?", (day,)
+        ).fetchone()
+        use_today = not (closed and closed["kind"] == "closed")
     except sqlite3.OperationalError as exc:
         if "no such table" not in str(exc):
             raise
-        return conn.execute("SELECT id,name,NULL AS period_label,NULL AS period_start FROM classes WHERE enabled=1 AND archived=0 ORDER BY sort_order,id").fetchall()
+        use_today = True
+
+    try:
+        # Pick ONE period per class so its label and start time always agree.
+        # On non-school days, fall back to the normal bell schedule rather
+        # than dropping every class into the manual sort order.
+        return conn.execute("""
+            WITH ranked AS (
+                SELECT cp.class_id, p.label AS period_label,
+                    COALESCE(sp.start_time, p.start_time) AS period_start,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY cp.class_id
+                        ORDER BY
+                            CASE WHEN ?=1 AND instr(p.weekdays, ?) > 0
+                                 THEN 0 ELSE 1 END,
+                            CASE WHEN ?=1 AND instr(p.weekdays, ?) > 0
+                                 THEN COALESCE(sp.start_time, p.start_time)
+                                 ELSE p.start_time END,
+                            p.start_time, p.id
+                    ) AS rn
+                FROM class_periods cp
+                JOIN bell_periods p ON p.id=cp.period_id
+                LEFT JOIN school_day_periods sp
+                    ON sp.period_id=p.id AND sp.day=?
+            )
+            SELECT c.id, c.name,
+                   CASE WHEN ?=1 THEN r.period_label ELSE NULL END AS period_label,
+                   CASE WHEN ?=1 THEN r.period_start ELSE NULL END AS period_start
+            FROM classes c
+            LEFT JOIN ranked r ON r.class_id=c.id AND r.rn=1
+            WHERE c.enabled=1 AND c.archived=0
+            ORDER BY CASE WHEN r.period_start IS NULL THEN 1 ELSE 0 END,
+                     r.period_start, c.name COLLATE NOCASE, c.id
+        """, (int(use_today), weekday, int(use_today), weekday, day,
+              int(use_today), int(use_today))).fetchall()
+    except sqlite3.OperationalError as exc:
+        if "no such table" not in str(exc):
+            raise
+        return conn.execute(
+            """SELECT id,name,NULL AS period_label,NULL AS period_start
+               FROM classes WHERE enabled=1 AND archived=0
+               ORDER BY name COLLATE NOCASE,id"""
+        ).fetchall()
+
+def ensure_canvas_planning(conn):
+    """Family-only scheduling choices; never written back to Canvas."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS canvas_family_planning (
+            assignment_id INTEGER PRIMARY KEY,
+            planning_date TEXT,
+            show_now INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+
+
+def effective_canvas_date(item):
+    return item["planning_date"] or item["due_date"]
+
+
+def afternoon_bucket(item, cutoff, far_cutoff):
+    if item["show_now"]:
+        return "current"
+    due = effective_canvas_date(item)
+    if not due:
+        return "undated"
+    if due <= cutoff:
+        return "current"
+    if due <= far_cutoff:
+        return "future"
+    return "far"
+
+
+@router.post("/parent/canvas/{assignment_id}/planning")
+def save_canvas_planning(
+    assignment_id: int,
+    planning_date: str = Form(""),
+    show_now: str = Form(""),
+):
+    planning_date = planning_date.strip()
+    if planning_date:
+        try:
+            date.fromisoformat(planning_date)
+        except ValueError:
+            raise HTTPException(400, "Invalid planning date")
+    with db() as conn:
+        ensure_canvas_planning(conn)
+        if not conn.execute("SELECT 1 FROM canvas_assignments WHERE id=?", (assignment_id,)).fetchone():
+            raise HTTPException(404, "Canvas assignment not found")
+        conn.execute("""
+            INSERT INTO canvas_family_planning(assignment_id,planning_date,show_now)
+            VALUES(?,?,?)
+            ON CONFLICT(assignment_id) DO UPDATE SET
+                planning_date=excluded.planning_date,show_now=excluded.show_now
+        """, (assignment_id, planning_date or None, int(show_now == "yes")))
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse("/parent", status_code=303)
+
+
+def canvas_planning_editor(assignment):
+    aid = assignment["id"]
+    planned = assignment["planning_date"] or ""
+    selected = " checked" if assignment["show_now"] else ""
+    return (f'<form method="post" action="/parent/canvas/{aid}/planning">'
+            f'<label for="plan-{aid}">Parent planning date</label>'
+            f'<input id="plan-{aid}" type="date" name="planning_date" value="{esc(planned)}">'
+            f'<label><input type="checkbox" name="show_now" value="yes"{selected}> Show now</label>'
+            '<button type="submit">Save planning</button></form>'
+            + (f'<small>Teacher due: {esc(friendly_date(assignment["due_date"]))}</small>'
+               if assignment["due_date"] else '<small>Teacher has not set a due date.</small>'))
+
 
 def get_canvas_assignments(conn):
+    ensure_canvas_planning(conn)
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(canvas_assignments)")}
     submitted = "a.canvas_submitted" if "canvas_submitted" in cols else "0"
     canvas_missing = "a.canvas_missing" if "canvas_missing" in cols else "0"
@@ -207,8 +303,8 @@ def get_canvas_assignments(conn):
     missing = "a.missing_from_canvas" if "missing_from_canvas" in cols else "0"
     last_seen = "a.last_seen_at" if "last_seen_at" in cols else "NULL"
     return conn.execute(f"""SELECT a.id,a.title,a.due_date,a.due_at,a.html_url,
-        a.submission_types,a.completed,{missing} AS missing_from_canvas,{last_seen} AS last_seen_at,{category} AS family_category,{submitted} AS canvas_submitted,{canvas_missing} AS canvas_missing,{reviewed} AS review_dismissed,c.id AS class_id,c.name AS class_name,c.sort_order
-        FROM canvas_assignments a JOIN canvas_course_links l ON l.canvas_course_id=a.canvas_course_id
+        a.submission_types,a.completed,{missing} AS missing_from_canvas,{last_seen} AS last_seen_at,{category} AS family_category,{submitted} AS canvas_submitted,{canvas_missing} AS canvas_missing,{reviewed} AS review_dismissed,c.id AS class_id,c.name AS class_name,c.sort_order,fp.planning_date,COALESCE(fp.show_now,0) AS show_now
+        FROM canvas_assignments a LEFT JOIN canvas_family_planning fp ON fp.assignment_id=a.id JOIN canvas_course_links l ON l.canvas_course_id=a.canvas_course_id
         JOIN classes c ON c.id=l.class_id WHERE c.enabled=1 AND c.archived=0
         ORDER BY CASE WHEN a.due_date IS NULL OR a.due_date='' THEN 1 ELSE 0 END,
         a.due_date,a.due_at,a.title,a.id""").fetchall()
@@ -292,6 +388,10 @@ def canvas_assignment_html(assignment, *, show_class=False):
             if url.lower().startswith("https://") else "")
     prefix = f'<span class="task-class">{esc(assignment["class_name"])}</span>' if show_class else ""
     status = "Completed" if assignment["completed"] else canvas_due_label(assignment)
+    if assignment["planning_date"] and not assignment["completed"]:
+        status = f'Plan: {friendly_date(assignment["planning_date"])} · Teacher: {canvas_due_label(assignment)}'
+    if assignment["show_now"] and not assignment["completed"]:
+        status = "Show now · " + status
     due_class = "due-overdue" if not assignment["completed"] and status.startswith("Overdue") else ""
     return (f'<div class="canvas-card">{prefix}<strong>{canvas_title_html(assignment)}</strong>'
             f'<div class="canvas-meta"><small><span class="{due_class}">{esc(status)}</span> · '
@@ -629,38 +729,41 @@ def home():
         except sqlite3.OperationalError as exc:
             if "no such table" not in str(exc): raise
             lunch_open=[]
-    incomplete=[a for a in canvas_assignments if not a["completed"]]
-    open_entries=[e for e in entries if not e["done"] and (not e["planned_date"] or e["planned_date"] <= today())]
-    waiting=[e for e in entries if e["done"] and not e["parent_confirmed"]]
-    upcoming=[e for e in entries if not e["done"] and e["planned_date"] and e["planned_date"] > today()]
-    linked_open={}
-    for entry in open_entries:
-        if entry["linked_canvas_id"] is not None:
-            linked_open.setdefault(entry["linked_canvas_id"], []).append(entry)
-    parts=['<section class="panel"><h3>Today’s plan</h3>',
-           '<p>Family tasks and actionable Canvas work are together. Other Canvas materials are below, not treated as overdue homework.</p>',
-           '<div class="summary-grid">',
-           f'<span><strong>{len(open_entries)}</strong> family tasks</span>',
-           f'<span><strong>{sum(actionable_canvas(a) and a["id"] not in linked_open for a in incomplete)}</strong> Canvas actions</span>',
-           f'<span><strong>{len(waiting)}</strong> waiting for parent</span>',
-           '</div><p><a href="/add">+ Add something I still need to do</a></p></section>',
-           '<section class="panel"><h3>My tasks</h3><div class="task-group">']
-    rendered_entry_ids=set()
-    def manual_task_card(item):
-        state=item["progress"] or "not_started"
-        origin="Parent added" if item["origin"]=="parent" else "Added information"
-        conflict = (f'<p class="muted" role="status">Dates differ: family task {esc(friendly_date(item["due_date"]))}; '
-                    f'Canvas {esc(friendly_date(item["linked_canvas_due_date"]))}. '
-                    'Family task date controls this task.</p>'
-                    if item["linked_canvas_id"] is not None and item["due_date"] and
-                    item["linked_canvas_due_date"] and item["due_date"] != item["linked_canvas_due_date"] else "")
-        missing = ('<p class="muted">Canvas item no longer found in latest import; this family task remains.</p>'
-                   if item["linked_canvas_missing"] else "")
-        related=(f'<p class="muted">Related Canvas: {esc(item["linked_canvas_title"])} · Notes and tasks (1)</p>' 
-                 if item["linked_canvas_title"] else "")
-        return (f'<article class="task-card"><span class="task-class">{esc(item["class_name"])}</span>'
-                f'<span class="task-origin">{origin}</span>{related}{conflict}{missing}<h4>{esc(item["details"])}</h4>' 
-                f'<p class="muted">{esc(item["kind"])}</p>{deadline_html(item)}'
+    classes = []
+    with db() as conn:
+        classes = get_active_classes(conn)
+    cutoff = (family_today() + timedelta(days=2)).isoformat()
+    far_cutoff = (family_today() + timedelta(days=60)).isoformat()
+    incomplete = [a for a in canvas_assignments if not a["completed"]]
+    open_entries = [e for e in entries if not e["done"]]
+    waiting = [e for e in entries if e["done"] and not e["parent_confirmed"]]
+    linked_ids = {e["linked_canvas_id"] for e in open_entries if e["linked_canvas_id"] is not None}
+    buckets = {key: {} for key in ("current", "future", "far", "undated")}
+    for assignment in incomplete:
+        if assignment["id"] in linked_ids:
+            continue
+        bucket = afternoon_bucket(assignment, cutoff, far_cutoff)
+        buckets[bucket].setdefault(assignment["class_id"], []).append(("canvas", assignment))
+    for item in open_entries:
+        due = item["planned_date"] or item["due_date"]
+        if item["planned_date"] and item["planned_date"] > cutoff:
+            bucket = "far" if item["planned_date"] > far_cutoff else "future"
+        elif not due:
+            bucket = "current"  # Family-created tasks need attention until completed.
+        elif due <= cutoff:
+            bucket = "current"
+        elif due <= far_cutoff:
+            bucket = "future"
+        else:
+            bucket = "far"
+        buckets[bucket].setdefault(item["class_id"], []).append(("manual", item))
+
+    def task_html(item):
+        state = item["progress"] or "not_started"
+        origin = "Parent added" if item["origin"] == "parent" else "Added information"
+        return (f'<article class="task-card"><span class="task-origin">{origin}</span>'
+                f'<h4>{esc(item["details"])}</h4><p class="muted">{esc(item["kind"])}</p>'
+                f'{deadline_html(item)}'
                 f'<form class="task-progress" method="post" action="/entries/{item["id"]}/progress">'
                 f'<label for="progress-{item["id"]}">Progress</label>'
                 f'<select id="progress-{item["id"]}" name="progress">'
@@ -669,45 +772,48 @@ def home():
                 '<option value="done">Done</option></select>'
                 '<button type="submit">Save progress</button></form>'
                 + (f'<p><small>Parent note: {esc(item["coaching_note"])}</small></p>'
-                   if item["coaching_note"] else '') + '</article>')
-    # Family tasks first, even if they are linked to Canvas; no duplicate Canvas card.
-    for item in open_entries:
-        parts.append(manual_task_card(item))
-        rendered_entry_ids.add(item["id"])
-    for item in incomplete:
-        if not actionable_canvas(item) or item["id"] in linked_open:
-            continue
-        parts.append(canvas_assignment_html(item,show_class=True))
-    if not open_entries and not any(actionable_canvas(a) and a["id"] not in linked_open for a in incomplete) and not lunch_open:
-        parts.append('<p>No action tasks recorded. Check unsorted Canvas items below with a parent.</p>')
-    for task in lunch_open:
-        parts.append(f'<article class="task-card"><span class="task-class">{esc(task["activity_name"])}</span><span class="task-origin">Lunch Buddies</span>'
-                     f'<h4>{esc(task["details"])}</h4>'
-                     f'<form method="post" action="/parent/lunch-buddies/tasks/{task["id"]}/done">'
-                     '<button type="submit">Done</button></form></article>')
-    parts.append('</div></section>')
-    for category,heading in (("assessment","Upcoming assessments"),("review","Review and reference"),
-                             ("class","In-class information"),("unsorted","Unsorted Canvas items")):
-        items=[a for a in incomplete if canvas_category(a)==category and a["id"] not in linked_open]
-        if not items: continue
-        if category=="assessment":
-            parts.append(f'<section class="panel"><h3>{heading} ({len(items)})</h3>')
-        else:
-            parts.append(f'<details class="panel"><summary>{heading} ({len(items)})</summary>')
-        if category=="unsorted":
-            parts.append('<p><small>These may be homework, class activities, or reference materials. Ask a parent before treating them as tasks.</small></p>')
-        for a in sorted(items,key=lambda a:(a["due_date"] is None,a["due_date"] or "9999",a["title"])):
-            parts.append(canvas_assignment_html(a,show_class=True))
-        parts.append('</section>' if category=="assessment" else '</details>')
-    if upcoming:
-        parts.append(f'<details class="panel"><summary>Planned for later ({len(upcoming)})</summary>'
-                     '<p><small>These tasks are saved, but their planned work dates have not arrived. '
-                     'Canvas official deadlines are not changed.</small></p>')
-        for item in sorted(upcoming,key=lambda entry:(entry["planned_date"],entry["class_name"])):
-            parts.append(f'<div class="class"><strong>{esc(item["class_name"])}</strong> · '
-                         f'{esc(item["details"])} · Work on {esc(friendly_date(item["planned_date"]))}'
-                         + (f' · {esc(deadline_label(item))}' if deadline_label(item) else '') + '</div>')
-        parts.append('</details>')
+                   if item["coaching_note"] else "") + '</article>')
+
+    def render_bucket(key):
+        for cls in classes:
+            items = buckets[key].get(cls["id"], [])
+            if not items:
+                continue
+            label = (f'Period {esc(cls["period_label"])} — ' if cls["period_label"] else "")
+            parts.append(f'<section class="panel"><h3>{label}{esc(cls["name"])} ({len(items)})</h3>')
+            def sort_key(pair):
+                kind, obj = pair
+                due = (obj["planned_date"] or obj["due_date"]) if kind == "manual" else effective_canvas_date(obj)
+                return (due is None, due or "9999-12-31", 0 if kind == "manual" else 1,
+                        str(obj["details"] if kind == "manual" else obj["title"]).casefold())
+            for kind, obj in sorted(items, key=sort_key):
+                parts.append(task_html(obj) if kind == "manual" else canvas_assignment_html(obj))
+            parts.append('</section>')
+
+    parts = ['<section class="panel"><h3>Today and the next two days</h3>'
+             '<p>Classes are in school-period order. Future Canvas work is grouped below. '
+             'A parent can change a planning date or select Show now in Parent Review.</p>'
+             f'<p><strong>{len(waiting)}</strong> tasks awaiting parent confirmation · '
+             '<a href="/add">Add something I still need to do</a></p></section>']
+    render_bucket("current")
+    if not any(buckets["current"].values()) and not lunch_open:
+        parts.append('<section class="panel"><p>No work due in the next two days.</p></section>')
+    if lunch_open:
+        parts.append('<section class="panel"><h3>Lunch Buddies tasks</h3>')
+        for task in lunch_open:
+            parts.append(f'<article class="task-card"><strong>{esc(task["activity_name"])}</strong>'
+                         f'<h4>{esc(task["details"])}</h4>'
+                         f'<form method="post" action="/parent/lunch-buddies/tasks/{task["id"]}/done">'
+                         '<button type="submit">Done</button></form></article>')
+        parts.append('</section>')
+    for key, title in (("future", "Future work (3–60 days)"),
+                       ("far", "Far future (61+ days)"),
+                       ("undated", "No due date")):
+        count = sum(len(v) for v in buckets[key].values())
+        if count:
+            parts.append(f'<details class="panel"><summary>{title} ({count})</summary>')
+            render_bucket(key)
+            parts.append('</details>')
     parts.append(canvas_history_html(canvas_assignments))
     return layout("My Afternoon","".join(parts))
 
@@ -794,7 +900,7 @@ def parent():
         if assignment["completed"]: continue
         parts.append(f'<div class="compact-canvas"><strong>{canvas_title_html(assignment)}</strong> '
                      f'<small>({esc(assignment["class_name"])})</small> '
-                     f'{canvas_category_tag(assignment)}{canvas_presence_label(assignment)}{canvas_category_editor(assignment)}' 
+                     f'{canvas_category_tag(assignment)}{canvas_presence_label(assignment)}{canvas_category_editor(assignment)}{canvas_planning_editor(assignment)}' 
                      f'<form method="post" action="/parent/canvas/{assignment["id"]}/add-task">'
                      '<label>Turn into a family task</label>'
                      '<select name="kind"><option value="Study">Study</option>'

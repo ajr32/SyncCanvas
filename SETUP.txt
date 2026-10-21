@@ -1,0 +1,29 @@
+SyncCanvas Google Calendar setup (parent Google account)
+=========================================================
+1. Install once: python -m pip install google-api-python-client google-auth-oauthlib google-auth-httplib2
+2. In Google Cloud Console (console.cloud.google.com), create/select a project,
+   enable Google Calendar API, configure OAuth consent screen, and create an
+   OAuth client of type Desktop app. Download its JSON credentials.
+3. Save that file as synccanvas_google_credentials.json in the SyncCanvas project root.
+   Add your own Google account as an OAuth test user if the consent screen is in Testing.
+4. From the project root, run:
+       python scripts/setup_class_calendars.py
+   Sign in to YOUR Google account when prompted. This previews classes.
+5. Review the list carefully. Canvas may include courses that aren't real classes.
+   If acceptable, run:
+       python scripts/setup_class_calendars.py --apply
+6. In Google Calendar settings, share the created calendars with Zachary's
+   school account. Sharing is manual in this first version.
+7. Run --apply again after second-semester courses appear in Canvas. Existing
+   course calendars are reused; new Canvas course IDs receive new calendars.
+
+IMPORTANT
+- Never commit the credentials JSON or synccanvas_google_token.json to Git.
+  Add both names to your local .gitignore.
+- This version is an ON-DEMAND setup script, not automatic background polling.
+- It does NOT synchronize assignments into Google Calendar yet.
+- It does NOT automatically share calendars or add a Parent Admin button yet.
+- Each course gets a January 1, 2000 placeholder event.
+- Calendar discovery uses Google calendar descriptions, not local SQLite.
+- Running --apply for all Canvas courses can create calendars for non-class
+  courses; review the preview before applying.

@@ -7,3 +7,14 @@ __pycache__/
 credentials.json
 token.json
 *.secret
+
+# Google OAuth credentials - never commit
+synccanvas_google_token.json
+synccanvas_google_credentials.json
+
+# Google OAuth credentials - never commit
+synccanvas_google_token.json
+synccanvas_google_credentials.json
+
+synccanvas_google_token.json
+synccanvas_google_credentials.json
