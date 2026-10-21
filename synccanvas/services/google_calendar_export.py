@@ -2,6 +2,7 @@
 """Export SyncCanvas assignments to Google class calendars.
 
 Uses parent planning dates when available, otherwise Canvas due dates.
+Reflects SyncCanvas completion status with a checkmark in event titles.
 Preview by default. Never modifies student progress or Canvas records.
 """
 
@@ -15,6 +16,7 @@ from synccanvas.services.family_time import family_today
 
 MARKER_PREFIX = "SyncCanvas Canvas Course ID: "
 EVENT_PREFIX = "sc"
+DONE_PREFIX = "\u2713 "
 
 
 @dataclass(frozen=True)
@@ -26,11 +28,7 @@ class ExportSummary:
 
 
 def event_id(course_id: int, assignment_id: int) -> str:
-    """Return a stable Google-compatible event ID.
-
-    Google Calendar custom event IDs permit base32hex characters:
-    digits 0-9 and letters a-v.
-    """
+    """Return a stable Google-compatible event ID."""
     if course_id <= 0 or assignment_id <= 0:
         raise ValueError("Invalid assignment identifiers.")
 
@@ -65,6 +63,7 @@ def load_assignments():
                 a.canvas_assignment_id,
                 a.title,
                 a.due_date,
+                a.completed,
                 fp.planning_date,
                 COALESCE(
                     NULLIF(fp.planning_date, ''),
@@ -134,15 +133,13 @@ def find_calendars(service):
 
 
 def build_event(row):
-    """Build an all-day event using the effective planning date."""
+    """Build an all-day event from the effective planning date."""
     day = date.fromisoformat(row["calendar_date"])
 
     description = "Imported from Canvas by SyncCanvas."
 
     if row["planning_date"]:
-        description += (
-            "\nDate selected by parent in SyncCanvas."
-        )
+        description += "\nDate selected by parent in SyncCanvas."
 
         if row["due_date"]:
             description += (
@@ -156,12 +153,19 @@ def build_event(row):
     if row["html_url"]:
         description += f"\nCanvas: {row['html_url']}"
 
+    # Completion is owned by SyncCanvas.
+    # Do not change the original assignment title in the database.
+    title = row["title"]
+
+    if bool(row["completed"]):
+        title = DONE_PREFIX + title
+
     return {
         "id": event_id(
             row["canvas_course_id"],
             row["canvas_assignment_id"],
         ),
-        "summary": row["title"],
+        "summary": title,
         "description": description,
         "start": {"date": day.isoformat()},
         "end": {

@@ -28,7 +28,10 @@ from synccanvas.services.google_calendar_provisioning import (
 )
 
 
+
 def google_service():
+    """Connect to Google Calendar without risking planner data."""
+    from google.auth.exceptions import RefreshError
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
     from google_auth_oauthlib.flow import InstalledAppFlow
@@ -42,25 +45,48 @@ def google_service():
     credentials = None
 
     if token_path.is_file():
-        credentials = Credentials.from_authorized_user_file(
-            str(token_path),
-            scope,
-        )
+        try:
+            credentials = Credentials.from_authorized_user_file(
+                str(token_path),
+                scope,
+            )
+        except (ValueError, OSError) as exc:
+            raise RuntimeError(
+                "The saved Google Calendar connection is invalid. "
+                "Reconnect Google Calendar. "
+                "Your SyncCanvas assignments are safe."
+            ) from exc
 
-    if (
+    if credentials and credentials.valid:
+        pass
+
+    elif (
         credentials
         and credentials.expired
         and credentials.refresh_token
     ):
-        credentials.refresh(Request())
+        try:
+            credentials.refresh(Request())
+        except RefreshError as exc:
+            raise RuntimeError(
+                "Google Calendar authorization has expired or "
+                "been revoked. Reconnect Google Calendar. "
+                "Your SyncCanvas assignments are safe."
+            ) from exc
 
-    elif not credentials or not credentials.valid:
+    elif credentials is not None:
+        raise RuntimeError(
+            "Google Calendar needs to be reconnected. "
+            "Your SyncCanvas assignments are safe."
+        )
+
+    else:
         if not credentials_path.is_file():
             raise RuntimeError(
                 f"Missing {credentials_path.name}. "
                 "Download a Google OAuth Desktop client JSON "
-                "from Google Cloud Console and save it in "
-                "the project root."
+                "from Google Cloud Console. "
+                "Your SyncCanvas assignments are safe."
             )
 
         flow = InstalledAppFlow.from_client_secrets_file(
@@ -74,11 +100,14 @@ def google_service():
             prompt="consent",
         )
 
-    if not credentials.valid:
+    if not credentials or not credentials.valid:
         raise RuntimeError(
-            "Google authentication did not complete."
+            "Google Calendar authentication did not complete. "
+            "Your SyncCanvas assignments are safe."
         )
 
+    # Only save successfully validated credentials.
+    # A failed refresh never overwrites the existing token.
     token_path.write_text(
         credentials.to_json(),
         encoding="utf-8",
@@ -89,6 +118,82 @@ def google_service():
         "v3",
         credentials=credentials,
     )
+
+
+def reconnect_google_calendar():
+    """Run a fresh Google authorization without deleting the old token.
+
+    Intended only for a trusted local administrator.
+    """
+    import os
+    import tempfile
+
+    from google_auth_oauthlib.flow import InstalledAppFlow
+    from googleapiclient.discovery import build
+
+    scope = ["https://www.googleapis.com/auth/calendar"]
+
+    token_path = ROOT / "synccanvas_google_token.json"
+    credentials_path = ROOT / "synccanvas_google_credentials.json"
+
+    if not credentials_path.is_file():
+        raise RuntimeError(
+            "Missing Google OAuth credentials. "
+            "Your existing token and assignments are unchanged."
+        )
+
+    flow = InstalledAppFlow.from_client_secrets_file(
+        str(credentials_path),
+        scope,
+    )
+
+    # Starts a browser-based authorization on the server computer.
+    credentials = flow.run_local_server(
+        port=0,
+        access_type="offline",
+        prompt="consent",
+    )
+
+    if not credentials or not credentials.valid:
+        raise RuntimeError(
+            "Google reconnection did not complete. "
+            "Your existing token and assignments are unchanged."
+        )
+
+    # Verify that the new credentials can access Google Calendar
+    # before replacing the saved token.
+    service = build(
+        "calendar",
+        "v3",
+        credentials=credentials,
+    )
+    service.calendarList().list(maxResults=1).execute(
+        num_retries=3
+    )
+
+    # Write to a temporary file, then replace the token atomically.
+    # Failed authorization leaves the old token untouched.
+    temporary_path = None
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=ROOT,
+            prefix=".synccanvas_google_token_",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary:
+            temporary_path = temporary.name
+            temporary.write(credentials.to_json())
+
+        os.replace(temporary_path, token_path)
+
+    finally:
+        if temporary_path and os.path.exists(temporary_path):
+            os.unlink(temporary_path)
+
+    return service
 
 
 def selected_courses():
