@@ -854,7 +854,10 @@ def parent():
            '<p><small>Class check-ins apply to today; unfinished tasks can be from earlier days. '
            'Archived and disabled classes are excluded from the daily review.</small></p>',
            '<p><a href="/afternoon">View shared afternoon plan</a> · '
-           '<a href="/settings">Configure SyncCanvas</a> · <a href="/parent/classes">Manage Classes</a></p></section>']
+           '<a href="/settings">Configure SyncCanvas</a> · '
+           '<a href="/parent/classes">Manage Classes</a> · '
+           '<a href="/parent/admin/google-calendar">Google Calendar</a>'
+           '</p></section>']
     parts.append(sync_controls("/parent"))
     # Supportive attention cues, never a score or an inferred grade.
     with db() as conn:

@@ -19,6 +19,7 @@ from synccanvas.services.sync_coordinator import sync_coordinator
 from synccanvas.services.parent_review import ParentReviewError, confirm_task, return_task, save_coaching_note
 from synccanvas.services.tasks import TaskInput, validate_task, validate_task_details, validate_due_date
 from synccanvas.parent_schedule import router as parent_schedule_router
+from synccanvas.google_calendar_admin import router as google_calendar_router
 
 app = FastAPI(title="SyncCanvas (local prototype)")
 
@@ -513,6 +514,7 @@ def sync_run_from_page(return_to: str = Form("/")):
     return go(destination)
 
 app.include_router(pages_router)
+app.include_router(google_calendar_router)
 app.include_router(parent_classes_router)
 from synccanvas.lunch_buddies import router as lunch_buddies_router
 app.include_router(parent_schedule_router)
