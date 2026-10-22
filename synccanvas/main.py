@@ -306,28 +306,39 @@ def set_canvas_category(assignment_id: int, category: str = Form(...)):
 
 
 @app.post("/parent/canvas/{assignment_id}/add-task")
-def add_canvas_family_task(assignment_id: int, kind: str = Form("Study")):
+def add_canvas_family_task(
+    assignment_id: int,
+    kind: str = Form("Study"),
+    details: str = Form(""),
+):
+    """Add one independent task linked to an assignment; many are allowed."""
     if kind not in ("Study", "Homework", "Review"):
         raise HTTPException(422, "Unknown task type")
+    details = details.strip()
+    if len(details) > 300:
+        raise HTTPException(422, "Task description must be at most 300 characters")
     with db() as conn:
-        assignment=conn.execute("""SELECT a.id,a.title,l.class_id FROM canvas_assignments a
+        assignment = conn.execute("""SELECT a.id,a.title,l.class_id FROM canvas_assignments a
             JOIN canvas_course_links l ON l.canvas_course_id=a.canvas_course_id
             JOIN classes c ON c.id=l.class_id
-            WHERE a.id=? AND c.enabled=1 AND c.archived=0""",(assignment_id,)).fetchone()
+            WHERE a.id=? AND c.enabled=1 AND c.archived=0""", (assignment_id,)).fetchone()
         if assignment is None:
             raise HTTPException(404, "Canvas assignment not found")
-        existing=conn.execute("""SELECT e.id FROM entry_canvas_links link
-            JOIN entries e ON e.id=link.entry_id
-            WHERE link.canvas_assignment_id=? AND e.done=0 LIMIT 1""",(assignment_id,)).fetchone()
-        if existing:
-            return go("/afternoon")
-        details=("Study for " if kind=="Study" else "Review " if kind=="Review" else "Complete ")+assignment["title"]
+        if not details:
+            details = ("Study for " if kind == "Study" else
+                       "Review " if kind == "Review" else "Complete ") + assignment["title"]
+        try:
+            task = validate_task(TaskInput(
+                class_id=assignment["class_id"], kind=kind, details=details
+            ))
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
         conn.execute("""INSERT INTO entries(class_id,kind,details,origin)
-            VALUES (?,?,?,'parent')""",(assignment["class_id"],kind,details[:300]))
-        task_id=conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            VALUES (?,?,?,'parent')""", (task.class_id, task.kind, task.details))
+        task_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         conn.execute("INSERT INTO entry_canvas_links(entry_id,canvas_assignment_id) VALUES (?,?)",
-                     (task_id,assignment_id))
-    return go("/afternoon")
+                     (task_id, assignment_id))
+    return go("/parent")
 
 
 @app.post("/parent/entries/{entry_id}/canvas-link")

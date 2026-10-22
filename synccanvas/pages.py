@@ -1,4 +1,3 @@
-
 """Local HTML pages for the SyncCanvas family planner."""
 import html
 import json
@@ -11,6 +10,8 @@ from fastapi.responses import HTMLResponse
 from synccanvas.database import db
 from synccanvas.services.recurring import ensure_today
 from synccanvas.services.tasks import ALLOWED_KINDS
+from synccanvas.services.arrival import get_arrival_checks, set_arrival_check
+from synccanvas.services.assignment_notes import get_assignment_notes, save_assignment_notes
 from synccanvas.services.sync_coordinator import sync_coordinator
 from synccanvas.services.sync_status import present_sync_status
 from synccanvas.models.sync_result import SyncState
@@ -763,7 +764,9 @@ def home():
         origin = "Parent added" if item["origin"] == "parent" else "Added information"
         return (f'<article class="task-card"><span class="task-origin">{origin}</span>'
                 f'<h4>{esc(item["details"])}</h4><p class="muted">{esc(item["kind"])}</p>'
-                f'{deadline_html(item)}'
+                + (f'<p><small>Related Canvas: {esc(item["linked_canvas_title"])}</small></p>'
+                   if item["linked_canvas_id"] is not None else '')
+                + f'{deadline_html(item)}'
                 f'<form class="task-progress" method="post" action="/entries/{item["id"]}/progress">'
                 f'<label for="progress-{item["id"]}">Progress</label>'
                 f'<select id="progress-{item["id"]}" name="progress">'
@@ -817,6 +820,74 @@ def home():
     parts.append(canvas_history_html(canvas_assignments))
     return layout("My Afternoon","".join(parts))
 
+def arrival_home_panel():
+    """Adult-facing daily physical arrival checklist."""
+    items = get_arrival_checks(family_today())
+    count = sum(item["verified"] for item in items)
+    parts = ['<section class="panel"><h3>Arrival Home</h3>',
+             '<p>Verify these four things before Z takes a break.</p>',
+             f'<p><strong>{count} of {len(items)}</strong> verified today.</p>']
+    for item in items:
+        key = esc(item["key"])
+        label = esc(item["label"])
+        verified = item["verified"]
+        parts.append(f'<div class="class"><strong>{label}</strong> — '
+                     + ('Verified' if verified else 'Not verified')
+                     + '<form method="post" action="/parent/arrival/check">'
+                     + f'<input type="hidden" name="item_key" value="{key}">'
+                     + f'<input type="hidden" name="verified" value="{0 if verified else 1}">'
+                     + f'<button class="{"secondary" if verified else ""}" type="submit">'
+                     + ('Undo' if verified else 'Verify')
+                     + '</button></form></div>')
+    if count == len(items):
+        parts.append('<p class="checked" role="status"><strong>Arrival complete — ready for a break.</strong></p>')
+    parts.append('</section>')
+    return ''.join(parts)
+
+
+@router.post("/parent/arrival/check")
+def update_arrival_check(item_key: str = Form(...), verified: int = Form(...)):
+    from fastapi.responses import RedirectResponse
+    if verified not in (0, 1):
+        raise HTTPException(400, "Invalid verification value")
+    try:
+        set_arrival_check(item_key, bool(verified), family_today())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return RedirectResponse('/parent', status_code=303)
+
+
+def assignment_notes_editor(assignment):
+    """Teacher and parent context; saving does not create a task."""
+    aid = assignment["id"]
+    notes = get_assignment_notes(aid)
+    return (
+        f'<details class="class"><summary>Teacher and parent notes</summary>'
+        f'<form method="post" action="/parent/canvas/{aid}/notes">'
+        f'<label for="teacher-note-{aid}">Teacher says</label>'
+        f'<textarea id="teacher-note-{aid}" name="teacher_note" rows="3">'
+        f'{esc(notes["teacher_note"])}</textarea>'
+        f'<label for="parent-note-{aid}">At home</label>'
+        f'<textarea id="parent-note-{aid}" name="parent_note" rows="3">'
+        f'{esc(notes["parent_note"])}</textarea>'
+        '<p><button type="submit">Save notes</button></p></form></details>'
+    )
+
+
+@router.post("/parent/canvas/{assignment_id}/notes")
+def update_assignment_notes(
+    assignment_id: int,
+    teacher_note: str = Form(""),
+    parent_note: str = Form(""),
+):
+    from fastapi.responses import RedirectResponse
+    try:
+        save_assignment_notes(assignment_id, teacher_note, parent_note)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return RedirectResponse("/parent", status_code=303)
+
+
 @router.get("/parent",response_class=HTMLResponse)
 def parent():
     with db() as conn:
@@ -846,7 +917,7 @@ def parent():
     awaiting_count=sum(t["done"] and not t["parent_confirmed"] for t in tasks)
     missing=[c for c in classes if c["id"] not in checkins]
     ask_teacher=[t for t in tasks if t["kind"]=="Ask Teacher" and not t["done"]]
-    parts=['<section class="panel"><h3>Afternoon review</h3>',
+    parts=[arrival_home_panel(), '<section class="panel"><h3>Afternoon review</h3>',
            f'<p><strong>{checked_count}/{len(classes)}</strong> classes checked today · '
            f'<strong>{open_count}</strong> unfinished tasks · '
            f'<strong>{awaiting_count}</strong> awaiting parent confirmation · '
@@ -903,13 +974,16 @@ def parent():
         if assignment["completed"]: continue
         parts.append(f'<div class="compact-canvas"><strong>{canvas_title_html(assignment)}</strong> '
                      f'<small>({esc(assignment["class_name"])})</small> '
-                     f'{canvas_category_tag(assignment)}{canvas_presence_label(assignment)}{canvas_category_editor(assignment)}{canvas_planning_editor(assignment)}' 
+                     f'{canvas_category_tag(assignment)}{canvas_presence_label(assignment)}{assignment_notes_editor(assignment)}{canvas_category_editor(assignment)}{canvas_planning_editor(assignment)}' 
                      f'<form method="post" action="/parent/canvas/{assignment["id"]}/add-task">'
-                     '<label>Turn into a family task</label>'
-                     '<select name="kind"><option value="Study">Study</option>'
+                     f'<label for="task-details-{assignment["id"]}">Add a task (optional)</label>'
+                     f'<input id="task-details-{assignment["id"]}" name="details" type="text" maxlength="300" '
+                     'placeholder="e.g. Make vocabulary flashcards">'
+                     f'<label for="task-kind-{assignment["id"]}">Task type</label>'
+                     f'<select id="task-kind-{assignment["id"]}" name="kind"><option value="Study">Study</option>'
                      '<option value="Homework">Homework</option>'
                      '<option value="Review">Review</option></select>'
-                     '<button type="submit">Add to My Tasks</button></form></div>')
+                     '<button type="submit">Add task</button></form></div>')
     parts.append('</section>')
     parts.append('<section class="panel"><h3>School follow-up</h3>'
                  f'<p>{school_review_count}/{len(classes)} classes have a saved school review today. '
